@@ -1,0 +1,10 @@
+closewindow>>56503fc49590
+activewindow>>steam_app_2225070,
+activewindowv2>>56503fb89530
+openwindow>>56503fc49590,3,steam_app_2225070,Trackmania
+activewindow>>steam_app_2225070,Trackmania
+activewindowv2>>56503fc49590
+activewindow>>brave-browser,I LOST IN 4 MOVES?! - YouTube - Brave
+activewindowv2>>56503e5c9070
+workspace>>2
+workspacev2>>2,2

@@ -1,0 +1,61 @@
+// The event loop. The only place in the program that blocks.
+package kippsrv
+
+import "core:sys/posix"
+
+MAX_POLL :: 64
+
+Loop :: struct {
+	srv:     ^Server,
+	src:     ^Sources,
+	running: bool,
+}
+
+quit :: proc(l: ^Loop) {
+	l.running = false
+}
+
+run :: proc(l: ^Loop) {
+	fds: [MAX_POLL]posix.pollfd
+	hit: [MAX_POLL]posix.FD
+	from_srv: [MAX_POLL]bool
+
+	l.running = true
+	for l.running {
+		nsrv := srv_fds(l.srv, fds[:])
+		nall := nsrv + src_fds(l.src, fds[nsrv:])
+
+		if posix.poll(&fds[0], posix.nfds_t(nall), src_timeout(l.src, now_ms())) > 0 {
+			// Copy the ready descriptors out first. Dispatching can drop a
+			// consumer or end a source, and the set must not shift under us.
+			n := 0
+			for i in 0 ..< nall {
+				if fds[i].revents == {} do continue
+				hit[n] = fds[i].fd
+				from_srv[n] = i < nsrv
+				n += 1
+			}
+			for i in 0 ..< n {
+				if from_srv[i] {
+					srv_ready(l.srv, hit[i])
+				} else {
+					publish(l, src_ready(l.src, hit[i]))
+				}
+			}
+		}
+		publish(l, src_tick(l.src, now_ms()))
+		srv_flush(l.srv)
+
+		// Every line built in a pass lives in the temp allocator and dies
+		// with the pass. Nothing in the loop reaches the heap.
+		free_all(context.temp_allocator)
+	}
+}
+
+// Facts from a source go to every consumer. The store will sit here later and
+// turn a repeat into silence and a change into one delta.
+@(private = "file")
+publish :: proc(l: ^Loop, lines: []string) {
+	for line in lines do broadcast(l.srv, line)
+}
+

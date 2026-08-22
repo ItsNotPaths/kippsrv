@@ -1,0 +1,3 @@
+Smith:802-11-wireless:wlp4s0
+lo:loopback:lo
+Wired connection 1:802-3-ethernet:

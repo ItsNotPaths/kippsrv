@@ -1,0 +1,16 @@
+  native-path:          hidpp_battery_0
+  model:                Logitech K400 Plus
+  serial:               c0-e1-e5-b2
+  power supply:         no
+  updated:              Sat 22 Aug 2026 05:47:09 PM CDT (8 seconds ago)
+  has history:          yes
+  has statistics:       yes
+  mouse
+    present:             yes
+    rechargeable:        yes
+    state:               fully-charged
+    warning-level:       none
+    battery-level:       full
+    percentage:          100% (should be ignored)
+    icon-name:          'battery-full-charged-symbolic'
+

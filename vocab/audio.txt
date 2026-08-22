@@ -1,0 +1,2 @@
+# Audio.
+sink        # <name> id= spec= state=

@@ -1,0 +1,2 @@
+# Batteries and power supplies.
+power       # <device> state= percentage= battery_level= warning_level= kind=
