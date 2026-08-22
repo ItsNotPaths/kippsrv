@@ -4,6 +4,6 @@ local n = 0
 return {
 	tick = function()
 		n = n + 1
-		k.emit("beat", "test", "count=" .. n)
+		k.event("beat", "test", "count=" .. n)
 	end,
 }

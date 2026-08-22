@@ -28,7 +28,7 @@ emit_joins_fields :: proc(t: ^testing.T) {
 
 	testing.expect(t, vm_eval(v, `k.emit("tag", "eDP-1", "2", "state=focused")`))
 	testing.expect_value(t, len(v.emitted), 1)
-	testing.expect_value(t, v.emitted[0], "tag\teDP-1\t2\tstate=focused")
+	testing.expect_value(t, v.emitted[0].line, "tag\teDP-1\t2\tstate=focused")
 }
 
 // A script hands over fields, never a line. So it cannot forge a second fact
@@ -40,7 +40,7 @@ emit_cannot_forge_a_line :: proc(t: ^testing.T) {
 
 	testing.expect(t, vm_eval(v, `k.emit("title", "0x1", "t=a\tb\nfocus\tHDMI-1")`))
 	testing.expect_value(t, len(v.emitted), 1)
-	testing.expect_value(t, v.emitted[0], "title\t0x1\tt=abfocusHDMI-1")
+	testing.expect_value(t, v.emitted[0].line, "title\t0x1\tt=abfocusHDMI-1")
 }
 
 @(test)
@@ -84,8 +84,8 @@ adapter_turns_a_foreign_line_into_facts :: proc(t: ^testing.T) {
 
 	out := vm_feed(v, a, "focus eDP-1 3")
 	testing.expect_value(t, len(out), 2)
-	testing.expect_value(t, out[0], "focus\teDP-1")
-	testing.expect_value(t, out[1], "tag\teDP-1\t3\tstate=focused,occupied")
+	testing.expect_value(t, out[0].line, "focus\teDP-1")
+	testing.expect_value(t, out[1].line, "tag\teDP-1\t3\tstate=focused,occupied")
 
 	// a line the adapter does not understand produces nothing
 	testing.expect_value(t, len(vm_feed(v, a, "some other format")), 0)

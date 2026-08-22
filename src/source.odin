@@ -234,14 +234,16 @@ src_timeout :: proc(ss: ^Sources, now: i64) -> i32 {
 }
 
 @(private = "file")
-emit_into :: proc(out: ^[dynamic]string, lines: []string) {
-	for l in lines do append(out, strings.clone(l, context.temp_allocator))
+emit_into :: proc(out: ^[dynamic]Emit, es: []Emit) {
+	for e in es {
+		append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind})
+	}
 }
 
 // Read one source and return the kipp lines it produced. The lines live in
 // the temp allocator and die with the loop pass.
-src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []string {
-	out := make([dynamic]string, context.temp_allocator)
+src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
+	out := make([dynamic]Emit, context.temp_allocator)
 
 	for s in ss.list {
 		if s.fd != fd || s.done do continue
@@ -303,12 +305,35 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []string {
 }
 
 // Run every timer that is due.
-src_tick :: proc(ss: ^Sources, now: i64) -> []string {
-	out := make([dynamic]string, context.temp_allocator)
+src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
+	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {
 		if s.kind != .Timer || now < s.due do continue
 		s.due = now + s.every
 		emit_into(&out, vm_call(ss.vm, s.adapter, "tick"))
 	}
 	return out[:]
+}
+
+// Write through a temporary file and rename, so a reader never sees half a
+// file. A reader watches the directory, because a rename makes a new inode.
+write_atomic :: proc(path: string, data: []byte) -> bool {
+	tmp := strings.concatenate({path, ".tmp"}, context.temp_allocator)
+	ctmp := strings.clone_to_cstring(tmp, context.temp_allocator)
+
+	fd := posix.open(ctmp, {.WRONLY, .CREAT, .TRUNC}, {.IRUSR, .IWUSR})
+	if fd < 0 do return false
+	n := posix.write(fd, raw_data(data), c.size_t(len(data)))
+	posix.close(fd)
+
+	if int(n) != len(data) {
+		posix.unlink(ctmp)
+		return false
+	}
+	cpath := strings.clone_to_cstring(path, context.temp_allocator)
+	if posix.rename(ctmp, cpath) != 0 {
+		posix.unlink(ctmp)
+		return false
+	}
+	return true
 }

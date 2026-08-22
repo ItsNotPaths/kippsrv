@@ -56,12 +56,12 @@ return {
 			local addr, r1 = split2(data)
 			local ws, r2 = split2(r1 or "")
 			local appid, title = split2(r2 or "")
-			k.emit("win_open", addr, "mon=" .. (mon or "?"),
+			k.event("win_open", addr, "mon=" .. (mon or "?"),
 			       "tag=" .. ws, "appid=" .. appid)
 			show(appid, title)
 
 		elseif ev == "closewindow" then
-			k.emit("win_close", data)
+			k.event("win_close", data)
 
 		elseif ev == "submap" then
 			k.emit("mode", data ~= "" and data or "normal")

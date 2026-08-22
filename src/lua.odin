@@ -13,9 +13,22 @@ import "core:fmt"
 import "core:strings"
 import lua "vendor:lua/5.4"
 
+// A fact has a current value and belongs in the store. An event happened and
+// does not. Only the adapter knows which, so only the adapter can say.
+Emit_Kind :: enum {
+	State,
+	Event,
+	Drop,
+}
+
+Emit :: struct {
+	line: string,
+	kind: Emit_Kind,
+}
+
 Vm :: struct {
 	L:       ^lua.State,
-	emitted: [dynamic]string,   // lines the running script produced
+	emitted: [dynamic]Emit,   // what the running script produced
 }
 
 // A loaded adapter, held by reference in the Lua registry.
@@ -36,11 +49,8 @@ cstr :: proc(s: string) -> cstring {
 // Three calls. ideas.txt puts wweft's script surface at about forty tagged
 // lines. `make tenet-api` fails if this one passes sixty.
 
-// @api k.emit(kind, field, ...)     one fact. Odin joins and sanitizes
 @(private = "file")
-l_emit :: proc "c" (L: ^lua.State) -> c.int {
-	context = runtime.default_context()
-
+build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 	n := lua.gettop(L)
 	if n < 1 do return 0
 
@@ -50,9 +60,30 @@ l_emit :: proc "c" (L: ^lua.State) -> c.int {
 
 	if line, ok := str(&o); ok {
 		v := vm_of(L)
-		append(&v.emitted, strings.clone(line, context.temp_allocator))
+		append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), kind})
 	}
 	return 0
+}
+
+// @api k.emit(kind, field, ...)     a fact with a current value. Stored
+@(private = "file")
+l_emit :: proc "c" (L: ^lua.State) -> c.int {
+	context = runtime.default_context()
+	return build_and_push(L, .State)
+}
+
+// @api k.event(kind, field, ...)    something happened. Never stored
+@(private = "file")
+l_event :: proc "c" (L: ^lua.State) -> c.int {
+	context = runtime.default_context()
+	return build_and_push(L, .Event)
+}
+
+// @api k.drop(kind, subject, ...)   this fact no longer exists
+@(private = "file")
+l_drop :: proc "c" (L: ^lua.State) -> c.int {
+	context = runtime.default_context()
+	return build_and_push(L, .Drop)
 }
 
 // @api k.log(...)                   diagnostics on stderr. `print` is this
@@ -156,7 +187,7 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 
 	v = new(Vm)
 	v.L = L
-	v.emitted = make([dynamic]string)
+	v.emitted = make([dynamic]Emit)
 	(^^Vm)(lua.getextraspace(L))^ = v
 
 	// Only these four. No io, no os, no package, no debug, no coroutine, so
@@ -185,6 +216,8 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 	lua.pushcfunction(L, l_log);   lua.setfield(L, -2, "log")
 	lua.pushcfunction(L, l_parse); lua.setfield(L, -2, "parse")
 	lua.pushcfunction(L, l_json);  lua.setfield(L, -2, "json")
+	lua.pushcfunction(L, l_event); lua.setfield(L, -2, "event")
+	lua.pushcfunction(L, l_drop);  lua.setfield(L, -2, "drop")
 	lua.setglobal(L, "k")
 
 	return v, true
@@ -224,7 +257,7 @@ vm_unload :: proc(v: ^Vm, a: Adapter) {
 // Call one function on an adapter and take back the facts it produced. The
 // returned lines live in the temp allocator and die with the loop pass.
 @(private = "file")
-call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []string {
+call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 	clear(&v.emitted)
 
 	lua.rawgeti(v.L, lua.REGISTRYINDEX, lua.Integer(a))
@@ -250,7 +283,7 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []string {
 }
 
 // One line of a foreign format.
-vm_feed :: proc(v: ^Vm, a: Adapter, line: string) -> []string {
+vm_feed :: proc(v: ^Vm, a: Adapter, line: string) -> []Emit {
 	return call(v, a, "feed", transmute([]byte)line)
 }
 
@@ -260,19 +293,19 @@ vm_feed :: proc(v: ^Vm, a: Adapter, line: string) -> []string {
 // Odin does not deframe. The moment the core learns a magic string or a
 // header layout it has learned a foreign protocol, and Pillar 1 is gone.
 // "lines or raw" is a transport noun, which the core is allowed to hold.
-vm_feed_bytes :: proc(v: ^Vm, a: Adapter, data: []byte) -> []string {
+vm_feed_bytes :: proc(v: ^Vm, a: Adapter, data: []byte) -> []Emit {
 	return call(v, a, "feed", data)
 }
 
 // The source reached the end of a batch. A format whose record spans lines
 // has no terminator on the last one, so the adapter needs telling.
-vm_flush :: proc(v: ^Vm, a: Adapter) -> []string {
+vm_flush :: proc(v: ^Vm, a: Adapter) -> []Emit {
 	return call(v, a, "flush", nil)
 }
 
 // Any other function on the adapter, with no argument. `tick` is the one a
 // timer source calls.
-vm_call :: proc(v: ^Vm, a: Adapter, fn: string) -> []string {
+vm_call :: proc(v: ^Vm, a: Adapter, fn: string) -> []Emit {
 	return call(v, a, fn, nil)
 }
 

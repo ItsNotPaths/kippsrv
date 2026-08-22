@@ -27,7 +27,7 @@ for dir in lua/*/; do
 
 	for f in "$dir"*.lua; do
 		[ -e "$f" ] || continue
-		for kind in $(grep -oE 'k\.emit\("[a-z_]+"' "$f" |
+		for kind in $(grep -oE 'k\.(emit|event|drop)\("[a-z_]+"' "$f" |
 		              sed 's/.*"\(.*\)"/\1/' | sort -u); do
 			if ! printf '%s\n' "$allowed" | grep -qx "$kind"; then
 				echo "FAIL  $f emits '$kind', not in $vocab"

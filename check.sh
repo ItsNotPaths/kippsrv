@@ -9,7 +9,9 @@ FAILS=0
 cleanup() { kill "$SRV" 2>/dev/null; rm -f "$SOCK"; }
 trap cleanup EXIT
 
-./kippsrv "$SOCK" 2>/dev/null &
+# The source finishes long before the consumer connects. Everything the
+# consumer sees comes out of the store.
+./kippsrv "$SOCK" exec lua/wm/dwl.lua cat test/fmt/dwl.txt 2>/dev/null &
 SRV=$!
 sleep 0.3
 
@@ -25,7 +27,8 @@ want() {
 }
 
 want greeting 'version	1	kippsrv' ''
-want dump     'mon	eDP-1	w=2256' ''
+want dump     'tag	0	1	state=occupied' ''
+want late     'focus	0' ''
 want sync     '^sync	state$' ''
 want command  'tag	eDP-1	7' 'TAG	7
 '

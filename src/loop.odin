@@ -8,6 +8,7 @@ MAX_POLL :: 64
 Loop :: struct {
 	srv:     ^Server,
 	src:     ^Sources,
+	store:   ^Store,
 	running: bool,
 }
 
@@ -44,6 +45,7 @@ run :: proc(l: ^Loop) {
 			}
 		}
 		publish(l, src_tick(l.src, now_ms()))
+		store_project(l.store)
 		srv_flush(l.srv)
 
 		// Every line built in a pass lives in the temp allocator and dies
@@ -52,10 +54,13 @@ run :: proc(l: ^Loop) {
 	}
 }
 
-// Facts from a source go to every consumer. The store will sit here later and
-// turn a repeat into silence and a change into one delta.
+// Everything a source produced goes through the store, which drops a repeat
+// and passes on a change. A consumer sees a line only when something moved.
 @(private = "file")
-publish :: proc(l: ^Loop, lines: []string) {
-	for line in lines do broadcast(l.srv, line)
+publish :: proc(l: ^Loop, es: []Emit) {
+	for e in es {
+		line := store_apply(l.store, e)
+		if line != "" do broadcast(l.srv, line)
+	}
 }
 

@@ -11,9 +11,9 @@ nothing, and a new source costs it one Lua file.
 
 ## State
 
-Step 3 of 6. A foreign format enters through a source, a Lua adapter converts
-it, and kipp comes out of the socket. There is no store yet, so a fact
-produced before a consumer connects is lost.
+Step 4 of 6. A foreign format enters through a source, a Lua adapter converts
+it, the store keeps what is current, and kipp comes out of the socket. A
+consumer connecting at any moment gets the truth.
 
 | | |
 | --- | --- |
@@ -21,10 +21,38 @@ produced before a consumer connects is lost.
 | `src/loop.odin` | `poll()`. The only place that blocks |
 | `src/lua.odin` | the VM, the fence, and a four-call script surface |
 | `src/source.odin` | foreign sources and their framing |
+| `src/store.odin` | current truth: dedup, the dump, the projection |
 | `src/main.odin` | **scaffolding.** A hardcoded desktop so the socket can be tested |
 | `lua/wm/example.lua` | a stand-in adapter, until `wm/hypr.lua` exists |
 
-Next: the store, then D-Bus.
+Next: D-Bus, a configuration file, and the outbound command path.
+
+## The store
+
+A source repeats itself. `nmcli` reprints every connection whenever anything
+changes, and a poll rereads the same battery percentage all day. The store
+keeps the last value for each fact and passes on only what moved.
+
+A fact is identified by its kind and its positional subject, so
+`tag eDP-1 2 state=occupied` replaces `tag eDP-1 2 state=focused` rather than
+sitting beside it.
+
+Only the adapter knows whether something has a current value, so only the
+adapter says:
+
+| Call | Means |
+| --- | --- |
+| `k.emit` | a fact with a current value. Stored, deduplicated, in the dump |
+| `k.event` | something happened. Passed on, never stored |
+| `k.drop` | this fact no longer exists |
+
+Two things follow. A consumer connecting at any moment reads the full current
+state and then the changes, so it never has to have heard the history. And a
+source that repeats itself costs nothing downstream, which is the other half of
+the throughput answer — most fast desktop traffic is the same value re-sent.
+
+The projection is written from the same table, once a pass, and only when
+something moved.
 
 ## Measured
 

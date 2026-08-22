@@ -2,32 +2,22 @@ package kippsrv
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sys/posix"
 
 SOCK_DEFAULT :: "/run/user/1000/kippsrv.sock"
 
-// Step 1 stands in for the store: a hardcoded desktop, so the socket, the
-// dump and the command path can be tested before an adapter exists.
-tag_focused := 2
+// The dump is the store, in the order facts were first seen.
+store: Store
 
 dump :: proc(s: ^Server, fd: posix.FD) {
-	o: Out
-
-	begin(&o, "mon");   add(&o, "eDP-1"); add(&o, "w=2256"); add(&o, "h=1504")
-	add(&o, "scale=1.5")
-	if line, ok := str(&o); ok do send_to(s, fd, line)
-
-	begin(&o, "focus"); add(&o, "eDP-1")
-	if line, ok := str(&o); ok do send_to(s, fd, line)
-
-	begin(&o, "tag");   add(&o, "eDP-1"); add(&o, "%d", tag_focused)
-	add(&o, "state=focused,occupied")
-	if line, ok := str(&o); ok do send_to(s, fd, line)
-
-	begin(&o, "mode");  add(&o, "normal")
-	if line, ok := str(&o); ok do send_to(s, fd, line)
+	lines := make([dynamic]string, context.temp_allocator)
+	store_each(&store, &lines)
+	for line in lines do send_to(s, fd, line)
 }
 
+// Scaffolding until an adapter takes commands. See the outbound half in the
+// README.
 command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 	o: Out
 
@@ -37,7 +27,11 @@ command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 	}
 	begin(&o, "tag"); add(&o, "eDP-1"); add(&o, "%s", m.subj[0])
 	add(&o, "state=focused,occupied")
-	if line, ok := str(&o); ok do broadcast(s, line)
+	if line, ok := str(&o); ok {
+		if out := store_apply(&store, Emit{line, .State}); out != "" {
+			broadcast(s, out)
+		}
+	}
 }
 
 main :: proc() {
@@ -84,6 +78,10 @@ main :: proc() {
 		}
 	}
 
-	l := Loop{srv = srv, src = &ss}
+	store.path = strings.concatenate({path, ".state"})
+	defer store_close(&store)
+	defer delete(store.path)
+
+	l := Loop{srv = srv, src = &ss, store = &store}
 	run(&l)
 }

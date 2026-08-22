@@ -27,9 +27,9 @@ run_many :: proc(v: ^Vm, adapter: string, fixtures: []string) -> ([]string, bool
 		text := string(src)
 		for line in strings.split_lines_iterator(&text) {
 			if line == "" do continue
-			for l in vm_feed(v, a, line) do append(&out, strings.clone(l, context.temp_allocator))
+			for l in vm_feed(v, a, line) do append(&out, strings.clone(l.line, context.temp_allocator))
 		}
-		for l in vm_flush(v, a) do append(&out, strings.clone(l, context.temp_allocator))
+		for l in vm_flush(v, a) do append(&out, strings.clone(l.line, context.temp_allocator))
 	}
 	return out[:], true
 }
@@ -47,9 +47,9 @@ run_fixture :: proc(v: ^Vm, adapter, fixture: string) -> ([]string, bool) {
 	text := string(src)
 	for line in strings.split_lines_iterator(&text) {
 		if line == "" do continue
-		for l in vm_feed(v, a, line) do append(&out, strings.clone(l, context.temp_allocator))
+		for l in vm_feed(v, a, line) do append(&out, strings.clone(l.line, context.temp_allocator))
 	}
-	for l in vm_flush(v, a) do append(&out, strings.clone(l, context.temp_allocator))
+	for l in vm_flush(v, a) do append(&out, strings.clone(l.line, context.temp_allocator))
 	return out[:], true
 }
 
@@ -77,7 +77,7 @@ adapters_convert_real_formats :: proc(t: ^testing.T) {
 		if !testing.expectf(t, ok, "%s: could not run", c.name) do continue
 
 		fmt.printfln("\n--- %s -> %d lines", c.name, len(out))
-		for line in out do fmt.printfln("    %s", line)
+		for l in out do fmt.printfln("    %s", l)
 
 		testing.expectf(t, len(out) >= c.least,
 		                "%s produced %d lines, wanted at least %d",
@@ -125,11 +125,11 @@ a_multi_line_record_needs_flush :: proc(t: ^testing.T) {
 	// one, because the next one clears the buffer.
 	done := make([dynamic]string, context.temp_allocator)
 	for line in strings.split_lines_iterator(&text) {
-		for l in vm_feed(v, a, line) do append(&done, strings.clone(l, context.temp_allocator))
+		for l in vm_feed(v, a, line) do append(&done, strings.clone(l.line, context.temp_allocator))
 	}
-	for l in vm_flush(v, a) do append(&done, strings.clone(l, context.temp_allocator))
+	for l in vm_flush(v, a) do append(&done, strings.clone(l.line, context.temp_allocator))
 	fmt.printfln("--- upower, with flush -> %d lines", len(done))
-	for line in done do fmt.printfln("    %s", line)
+	for l in done do fmt.printfln("    %s", l)
 	testing.expect_value(t, len(done), 1)
 	if len(done) == 0 do return
 
@@ -156,12 +156,12 @@ json_converts_through_one_odin_call :: proc(t: ^testing.T) {
 
 	out := vm_flush(v, a)
 	fmt.printfln("\n--- hyprctl monitors -j -> %d lines", len(out))
-	for line in out do fmt.printfln("    %s", line)
+	for l in out do fmt.printfln("    %s", l)
 
 	testing.expect(t, len(out) >= 2, "a monitor and its focus")
-	for line in out {
-		m, good := parse(line, context.temp_allocator)
-		testing.expectf(t, good, "unparsable output %q", line)
+	for e in out {
+		m, good := parse(e.line, context.temp_allocator)
+		testing.expectf(t, good, "unparsable output %q", e.line)
 	}
 }
 
@@ -194,12 +194,12 @@ a_binary_frame_is_read_in_lua :: proc(t: ^testing.T) {
 	out := vm_feed_bytes(v, a, frame(1, ws))
 
 	fmt.printfln("\n--- i3-shaped binary frame -> %d lines", len(out))
-	for line in out do fmt.printfln("    %s", line)
+	for l in out do fmt.printfln("    %s", l)
 
 	testing.expect_value(t, len(out), 3)
 	if len(out) < 3 do return
-	testing.expect_value(t, out[0], "tag\teDP-1\t1\tstate=focused,occupied")
-	testing.expect_value(t, out[1], "focus\teDP-1")
+	testing.expect_value(t, out[0].line, "tag\teDP-1\t1\tstate=focused,occupied")
+	testing.expect_value(t, out[1].line, "focus\teDP-1")
 }
 
 // Every window manager adapter must speak the same vocabulary, or the bar
@@ -279,10 +279,10 @@ an_invented_kind_passes_through_untouched :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(out), 1)
 	if len(out) == 0 do return
 	fmt.printfln("\n--- an unlisted kind -> %s", out[0])
-	testing.expect_value(t, out[0], "solar_panel\troof\twatts=412\ttilt=31")
+	testing.expect_value(t, out[0].line, "solar_panel\troof\twatts=412\ttilt=31")
 
 	// and a consumer parses it with the same parser as every other line
-	m, good := parse(out[0], context.temp_allocator)
+	m, good := parse(out[0].line, context.temp_allocator)
 	testing.expect(t, good)
 	testing.expect_value(t, m.kind, "solar_panel")
 	testing.expect_value(t, m.attr["watts"], "412")

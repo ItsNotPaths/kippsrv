@@ -18,7 +18,7 @@ drain :: proc(ss: ^Sources, budget := 200) -> []string {
 		for i in 0 ..< n {
 			if fds[i].revents == {} do continue
 			for l in src_ready(ss, fds[i].fd) {
-				append(&out, strings.clone(l, context.temp_allocator))
+				append(&out, strings.clone(l.line, context.temp_allocator))
 			}
 		}
 	}
