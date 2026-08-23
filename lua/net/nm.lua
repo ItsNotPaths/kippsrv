@@ -25,7 +25,12 @@ return {
 	feed = function(line)
 		local f = split_esc(line)
 		if #f < 3 or f[1] == "" then return end
-		k.emit("net", f[3] ~= "" and f[3] or "none",
-		       "name=" .. f[1], "type=" .. f[2])
+
+		-- The subject is the connection name, which is unique. Keying on the
+		-- device would collapse every inactive connection onto one empty
+		-- device, losing all but the last and rewriting it on every poll.
+		k.emit("net", f[1], "type=" .. f[2],
+		       "device=" .. (f[3] ~= "" and f[3] or ""),
+		       "state=" .. (f[3] ~= "" and "up" or "down"))
 	end,
 }

@@ -1,0 +1,400 @@
+kippsrv codebase review
+2026-08-22, at b381384. Covers src/*.odin, lua/, vocab/, Makefile, check.sh,
+vocab.sh, config.lua, README.md. basu/ is vendored third-party and is out of
+scope.
+
+VERIFIED means reproduced against the built binary. READ means found by
+reading the code and not run.
+
+
+================================================================ CRITICAL
+
+C1  Any local process can kill the daemon with one connection.   VERIFIED
+    src/kipp.odin:368 read_conn
+
+    read_conn holds a connection index `i` across its loop. send_error ->
+    send_to -> queue -> drop, and drop does unordered_remove on s.conns. The
+    next turn of the loop indexes s.conns[i], which is now a different
+    connection or out of range.
+
+    Reproduction: connect, send 20000 lines of "x\n", never read. Each bad
+    line makes an error line, 256 KB of them overflows the queue, the
+    connection is dropped, and the loop indexes it again.
+
+        src/kipp.odin(372:31) Index 0 is out of range 0..<0
+        daemon DIED
+
+    The socket is 0600, so the attacker is any process of the same user. For
+    a shell daemon that is still every application on the desktop.
+
+    Fix: read_conn must detect that its connection went away. Have send_error
+    and on_cmd report whether the connection survived, or look the connection
+    up by fd each turn the way srv_ready already does.
+
+
+C2  Every exec source leaks a zombie process, forever.           VERIFIED
+    src/source.odin:110 src_exec, :148 respawn
+
+    Nothing in the tree calls waitpid, and SIGCHLD is left at its default. A
+    source with `every` forks a child per period and never reaps it.
+
+    Measured, one source at every=200:
+
+        4 seconds -> 21 zombies
+
+    The shipped config.lua has three polling sources (nmcli 5s, pactl 2s,
+    brightnessctl 2s), about 1.2 zombies a second, roughly 100k a day. It
+    ends at RLIMIT_NPROC, after which fork fails for the whole user session.
+
+    Fix: waitpid(WNOHANG) in a loop once a pass, or set SIGCHLD to SIG_IGN.
+
+    See H5: fork failing is also what triggers the busy loop there, so C2
+    ends in C2 plus H5 together.
+
+
+C3  A configuration value hangs the daemon at 100% CPU.          VERIFIED
+    src/source.odin:229 take, src/config.odin:110 field_framing
+
+    framing = {kind = "prefix", header = 0} makes take return an empty unit
+    and report success. consumed removes 0 bytes. The deframing loop in
+    src_ready never terminates.
+
+        {kind="prefix", header=0, at=0, width=0} -> 98.6% CPU, state R
+
+    The same values are unchecked for a second fault: take indexes
+    s.buf[f.at + i] after only checking len(s.buf) >= f.header, so at + width
+    > header reads past the buffer.
+
+    Fix: reject header <= 0, width <= 0, and at + width > header at
+    config_load, and make take treat a zero-length unit as an error.
+
+
+C4  A Lua adapter can stall the loop. The fence does not stop it. VERIFIED
+    src/lua.odin, README "The fence"
+
+    README: "It never holds a descriptor and never joins a line, so it cannot
+    stall the loop", and "make tenet proves all three of those mechanically".
+
+    An adapter of `feed = function() while true do end end` pins the process
+    at 99.5% CPU. A consumer that connects gets no greeting and no dump. The
+    daemon is wedged until it is killed.
+
+    tenet-fd greps src/lua.odin for the string "posix". That proves the VM
+    file does not name posix. It proves nothing about stalling.
+
+    Two separate problems: the runtime has no guard, and the documentation
+    claims a guarantee it does not have.
+
+    Fix: a lua_sethook count hook that errors past a budget of instructions.
+    Then the claim is true. Until then the README should not make it.
+
+
+==================================================================== HIGH
+
+H1  No signal handling. Clean shutdown is dead code.             READ
+    src/main.odin, src/loop.odin:15 quit
+
+    quit() is never called from anywhere. l.running is only ever set true.
+    SIGTERM and SIGINT kill the process outright, so every `defer` in main is
+    skipped: the socket file is not unlinked, the store is not closed, and
+    child processes are not signalled.
+
+    A stale socket file is recovered on the next start (in_use answers no,
+    then unlink), so this is survivable, but nothing about it is deliberate.
+
+
+H2  A source that dies never comes back.                         READ
+    src/source.odin:337 src_ready
+
+    A .Sock source that closes is marked dead and is never retried. A D-Bus
+    connection that drops is never reopened. For the shipped config that
+    means: restart Hyprland and kippsrv holds stale window-manager facts for
+    the rest of the session with no path back short of restarting it.
+
+    An exec source retries, which shows the intent. Sockets and buses do not.
+
+
+H3  lua/wm/hypr.lua never clears the tag it stopped focusing.    VERIFIED
+    lua/wm/hypr.lua:52 workspacev2
+
+    Each workspace switch emits state=focused,occupied for the new tag and
+    says nothing about the old one. The store keys on kind plus subject, so
+    every tag ever visited stays focused.
+
+    Switching 1 -> 2 -> 3 leaves:
+
+        tag  HDMI-A-1  3  state=focused,occupied
+        tag  HDMI-A-1  1  state=focused,occupied
+        tag  HDMI-A-1  2  state=focused,occupied
+
+    A bar reading the dump highlights three workspaces at once.
+
+    lua/wm/dwl.lua does not have this: it re-emits the whole mask each time.
+    So the two shipped window-manager adapters disagree about what a `tag`
+    fact means, which is the drift vocab/wm.txt exists to prevent and cannot
+    catch, because the lint only checks kind names.
+
+    Fix: hypr.lua tracks the focused tag per monitor and re-emits the old one
+    without `focused`, or drops it.
+
+
+H4  lua/net/nm.lua collapses connections and defeats the store.  VERIFIED
+    lua/net/nm.lua:26
+
+    The subject is the DEVICE field. `nmcli connection show` lists saved
+    connections, not just active ones, and every inactive connection has an
+    empty DEVICE, so they all become the one key `net none`.
+
+    Four connections, three of them inactive, source output never changing,
+    poll every 300 ms:
+
+        25 lines in 2 seconds, 22 of them for the key `net none`
+
+    Two failures at once. Two of the three inactive connections are lost from
+    the dump, and the store broadcasts a change on every poll for a source
+    that never changed. That is precisely the case README's "The store"
+    section says costs nothing downstream.
+
+    Fix: key on the connection name, or use `connection show --active`, or
+    both.
+
+
+H5  A dead exec source spins the loop at 100% CPU.               READ
+    src/source.odin:296 src_timeout, :313 src_tick
+
+    src_timeout counts any source with every > 0, including one marked dead.
+    src_tick refuses to act on a dead source, so s.due is never advanced.
+    poll then returns immediately every pass, forever.
+
+    Reached when respawn fails three times, which is what happens once fork
+    starts failing, which is what C2 causes.
+
+    Fix: src_timeout skips s.dead.
+
+
+H6  D-Bus facts can never be marked stale.                       READ
+    src/dbus.odin:320 dbus_ready
+
+    dbus_ready appends Emit{..., 0}: source id 0. store_stale returns early
+    on src == 0, so nothing a D-Bus source produced is ever marked stale.
+    A Dbus carries no id and is not in ss.list, so src_reap never sees it.
+
+    Related, and not verified because testing it means killing the session
+    bus: bus_process returning < 0 is treated the same as "nothing waiting".
+    If the connection drops, the fd stays readable and dbus_ready returns
+    immediately each pass, which is the H5 spin again by another route.
+
+
+================================================================== MEDIUM
+
+M1  stop() leaks each connection's output queue.                 VERIFIED
+    src/kipp.odin:245
+
+    drop() deletes c.out. stop() does not. Odin's own test leak checker
+    already reports it:
+
+        [WARN] kippsrv.a_consumer_cannot_forge_a_fact
+               +++ leak 101B @ kipp.odin:214:queue()
+
+M2  watcher_notice removes the wrong tray items.                 READ
+    src/watcher.odin:220
+
+    strings.has_prefix(w.items[i], gone) against items stored as
+    "<name>/StatusNotifierItem". A NameOwnerChanged for ":1.4" also matches
+    ":1.42/StatusNotifierItem". Unique bus names are assigned in sequence, so
+    two-digit neighbours of a one-digit name are ordinary. Match against
+    gone + "/" instead.
+
+M3  w.hosts only ever increments.                                READ
+    src/watcher.odin:141
+
+    A host that exits is not noticed, so IsStatusNotifierHostRegistered stays
+    true for the life of the daemon after the first host ever registers.
+    Track host bus names the way items are tracked and drop them in
+    watcher_notice.
+
+M4  Only one watcher can exist, and the README shows two.        READ
+    src/watcher.odin:96, README "The watcher"
+
+    `w` is one file-scope global. The README presents
+
+        { name = "watcher", watcher = true },
+        { name = "watcher", watcher = true, bus_name = "org.kippsrv.Test" },
+
+    as a configuration. The second watcher_start overwrites w.bus, leaks the
+    first w.items and w.dropped, and leaves the first bus exporting an
+    object whose callbacks now answer from the second one's state.
+
+M5  PROPERTY_EMITS_CHANGE is advertised and never honoured.      READ
+    src/watcher.odin:253
+
+    RegisteredStatusNotifierItems and IsStatusNotifierHostRegistered are
+    flagged as emitting PropertiesChanged. Nothing ever calls
+    sd_bus_emit_properties_changed. A client that trusts the flag and waits
+    for the signal never updates.
+
+M6  push_json recurses without a depth limit.                    READ
+    src/lua.odin:171
+
+    l_json parses attacker-shaped JSON (a D-Bus payload, a compositor reply)
+    and push_json recurses per level with no bound and no lua_checkstack.
+    Deep nesting overflows the C stack or the Lua stack. w_value in dbus.odin
+    caps itself at depth 16; this path has no equivalent.
+
+M7  A failed D-Bus conversion hands the adapter malformed JSON.  READ
+    src/dbus.odin:154, :201, :246
+
+    In the array and struct branches a separator is written before the
+    element is attempted. When enter_container or w_value fails the loop
+    breaks and the closing brace is written anyway, giving a trailing comma
+    or an unbalanced document. w_message does the same at the top level.
+    Better to discard the message than to feed the adapter a broken one.
+
+M8  An over-long fact is dropped in silence.                     READ
+    src/lua.odin:74 build_and_push
+
+    Past MAX_LINE, str() returns not-ok and the emit is discarded with no
+    diagnostic. A long window title makes the whole fact disappear, and the
+    adapter author has nothing to go on. Log it, or truncate the last field.
+
+M9  The store has no size limit.                                 READ
+    src/store.odin
+
+    facts and order grow without bound. vocab/wm.txt warns an adapter not to
+    put a title in a subject, and nothing enforces it. One adapter that keys
+    on something unbounded and the daemon grows until it is killed.
+
+M10 lua/media/mpris.lua shares one `last` across all players.    READ
+    lua/media/mpris.lua:12
+
+    title, artist, length and status are one table. Two players and each
+    overwrites the other's fields, so a fact emitted for player A carries
+    player B's title. Key `last` by last.who.
+
+M11 timer = true with no `every` is a silent no-op.              VERIFIED
+    src/config.odin:214, src/source.odin:296
+
+    every defaults to 0. src_timeout skips a source with every == 0, so poll
+    blocks and the timer never fires. Add another source and it fires once
+    per pass instead. Measured: 0% CPU and no ticks, alone. Reject every <= 0
+    for a timer at config_load.
+
+M12 More than about 31 sources are silently never read.          READ
+    src/loop.odin:6, src/kipp.odin:14
+
+    MAX_POLL is 64 and srv_fds may take 33 of it. src_fds fills what is left
+    and drops the rest with no message. Say something, or size the poll set
+    to the number of descriptors.
+
+M13 The state file is rewritten and renamed on every pass that   READ
+    moved.
+    src/store.odin:141 store_project
+
+    Full serialize, write, rename. On a busy desktop that is hundreds of
+    renames a second, and any reader watching the directory sees every one.
+    A minimum interval between writes would cost nothing in accuracy.
+
+M14 hypr.lua's seed table grows without bound on a live socket.  READ
+    lua/wm/hypr.lua:37
+
+    Any line that is not `event>>data` is appended to `seed`. flush only runs
+    at end of descriptor, which for socket2 is never. One unrecognised line
+    per event and the table grows for the life of the session. It is also
+    shared with the seed exec source, so a stray socket line corrupts the
+    next JSON decode.
+
+M15 The i3 and sway path cannot work as configured.              READ
+    lua/wm/i3.lua, config.lua:23
+
+    The adapter handles reply types 1 and 3 only. Nothing ever sends the
+    GET_WORKSPACES request, and there is no outbound path to send it with
+    (README: "Next: ... the outbound command path"). Subscribed events have
+    the high bit set and are not handled. The commented config line reads as
+    a working option and is not one. Say so in the comment.
+
+
+===================================================================== LOW
+
+L1  Seven paths in README.md do not exist:
+        lua/src/nm.lua       lua/src/pw.lua        lua/src/backlight.lua
+        lua/src/upower.lua   lua/src/hyprmon.lua   lua/src/framed.lua
+        test/vocab-wm.txt  (it is vocab/wm.txt)
+
+L2  README source table says "dbus | subscribe to a signal (dbus.odin, not
+    written)". dbus.odin is written and the check suite exercises it.
+
+L3  src/lua.odin:59 says "Three calls." The surface is six: emit, event,
+    drop, log, parse, json. README's store table lists three of them.
+
+L4  README says the dependency is 15 symbols plus 5 for owning a name. The
+    foreign block in src/dbus.odin declares 24.
+
+L5  tenet-core's noun list (tag, workspace, volume, bluetooth, battery,
+    theme) is tuned to pass. src/watcher.odin emits the literal kind "tray"
+    and "tray" is not on the list. The check reports "core knows no domain"
+    while the core names one. Either add tray and grant the exception
+    explicitly, or drop the claim.
+
+L6  vocab.sh only matches k.emit("literal". An adapter that builds a kind in
+    a variable is invisible to the lint. Worth a comment in vocab.sh so the
+    limit is known rather than discovered.
+
+L7  `odin build src` compiles src/*_test.odin into the shipped binary. CORE
+    filters them for the tenet greps only. Consider a build tag.
+
+L8  Tests write fixed paths: /tmp/kippsrv-projection-test.state and
+    /tmp/kippsrv-forge.sock. Two runs at once collide.
+
+L9  check.sh relies on `sleep 0.4` for startup and cleanup only kills $SRV.
+    DSRV and WSRV are left behind if the script exits early.
+
+L10 The Makefile rule for basu/build/libbasu.a starts with `rm -rf basu`, and
+    `distclean` does the same. basu/ is gitignored but is present in the
+    working tree with its own .git. Either is one command from deleting it.
+
+L11 lua/wm/example.lua says "until wm/hypr.lua exists" and hypr.lua exists.
+    It is still counted by vocab.sh as a shipped adapter and is only used by
+    tests. Say it is a test fixture, or move it under test/lua/.
+
+L12 Dead code: quit() (loop.odin:15, no caller), dbus_fd() (dbus.odin:311,
+    no caller), odin_ctx is assigned in dbus_open and read only by watcher
+    callbacks, vm_unload is used by tests only.
+
+L13 serve() checks in_use(path) and then unlinks. Two daemons starting at the
+    same moment can both pass the check and the second wins.
+
+L14 vocab/net.txt declares `state=` for the net kind. lua/net/nm.lua never
+    emits it. vocab.sh checks kinds only, so the attribute drift is not
+    caught.
+
+L15 config.odin:114 field_framing calls field_str for "kind" and drops the
+    expanded heap string. One small leak per prefix source at startup.
+
+L16 config_start dedupes adapters by the raw configuration string.
+    "lua/wm/hypr.lua" and "./lua/wm/hypr.lua" load twice and get separate
+    state, which silently breaks the seed-and-stream arrangement.
+
+L17 A source naming both exec and sock takes exec and ignores sock without a
+    word. The switch in config_start should say which one it chose.
+
+L18 kipp.odin:186 wr() treats a partial send of the greeting as a failure and
+    closes the connection. The queue path handles a short write properly; the
+    greeting does not.
+
+
+================================================================== summary
+
+    4 critical, 6 high, 15 medium, 18 low.
+
+    C1 is the one to fix first: any process that can open the socket can kill
+    the daemon on purpose or by accident, and it takes about twenty thousand
+    junk lines to do it.
+
+    C2 is the one that breaks a machine left running: the shipped
+    configuration makes roughly 100k zombie processes a day.
+
+    C1, C2, C3, C4, H3, H4 and M11 were reproduced against the built binary.
+    Everything else was found by reading.
+
+    `make check` passes as it stands, including the D-Bus and watcher checks.
+    None of the above is caught by it.

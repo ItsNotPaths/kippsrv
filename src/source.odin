@@ -5,9 +5,8 @@
 //   timer  fire on a period
 //   dbus   subscribe to a signal          (dbus.odin, not here)
 //
-// A source owns the descriptor and the framing. An adapter gets whole units
-// and never a partial one, so nothing in Lua reassembles a torn line or a
-// torn frame.
+// A source owns the descriptor and the framing, so an adapter gets whole
+// units and never reassembles a torn one.
 package kippsrv
 
 import "core:c"
@@ -43,6 +42,7 @@ Kind :: enum {
 	Exec,
 	Sock,
 	Timer,
+	Dbus,
 }
 
 Source :: struct {
@@ -55,22 +55,46 @@ Source :: struct {
 	framing: Framing,
 	buf:     [dynamic]byte,
 	argv:    []string,   // exec, kept so it can be run again
-	every:   i64,        // period in ms. A timer fires, an exec respawns
+	path:    string,     // sock, kept so it can be dialled again
+	base:    i64,        // the period the configuration asked for
+	every:   i64,        // the period in use, which backoff can stretch
+	idle:    int,        // polls in a row that changed nothing
+	steady:  bool,       // backoff is off for this source
 	due:     i64,        // next fire on the monotonic clock
 	done:    bool,       // ended for now
 	fails:   int,        // respawns in a row that did not start
 	dead:    bool,       // gone for good. Its facts are stale
 	reaped:  bool,       // the store has been told
+	bus:     ^Bus,       // dbus only
 }
 
 Sources :: struct {
-	vm:     ^Vm,
-	list:   [dynamic]^Source,
-	buses:  [dynamic]^Dbus,
+	vm:      ^Vm,
+	list:    [dynamic]^Source,
 	next_id: int,
+	last:    ^Source,     // the source src_ready just handled
+	warned:  bool,        // the poll set overflowed, reported once
 }
 
-MAX_BUF :: 1 << 20   // a source that never frames must not grow without end
+MAX_BUF   :: 1 << 20   // a source that never frames must not grow without end
+RETRY_MS  :: 2000      // how often a closed socket is dialled again
+
+// A poll that learns nothing still costs a fork, an exec and a Lua call. The
+// store spares the consumers, not the machine.
+IDLE_BEFORE_BACKOFF :: 3
+BACKOFF_MAX_FACTOR  :: 16
+BACKOFF_CEILING_MS  :: 60_000
+
+// ------------------------------------------------------------------ reaping
+
+// A polling source forks once a period. Without this the process table fills
+// and fork eventually fails for the whole session.
+reap :: proc() {
+	for {
+		st: c.int
+		if posix.waitpid(-1, &st, {.NOHANG}) <= 0 do return
+	}
+}
 
 // ------------------------------------------------------------------ time
 
@@ -135,12 +159,11 @@ src_exec :: proc(ss: ^Sources, name: string, argv: []string, adapter: Adapter,
 
 	return add(ss, new_clone(Source{
 		name = strings.clone(name), kind = .Exec, fd = fds[0], pid = pid,
-		adapter = adapter, framing = framing, argv = kept, every = every,
+		adapter = adapter, framing = framing, argv = kept, every = every, base = every,
 	})), true
 }
 
-// Run an exec source again. Its adapter and its state are untouched, which is
-// what lets a poll build on what the last run learned.
+// Its adapter and its state survive, so a poll builds on the last run.
 @(private = "file")
 respawn :: proc(s: ^Source) -> bool {
 	cargv := make([]cstring, len(s.argv) + 1)
@@ -189,9 +212,40 @@ src_sock :: proc(ss: ^Sources, name, path: string,
 	}
 	set_flags(fd)
 	return add(ss, new_clone(Source{
-		name = strings.clone(name), kind = .Sock, fd = fd,
-		adapter = adapter, framing = framing,
+		name = strings.clone(name), kind = .Sock, fd = fd, path = strings.clone(path),
+		adapter = adapter, framing = framing, every = RETRY_MS, base = RETRY_MS,
 	})), true
+}
+
+// A compositor that restarts should not strand us with its old facts.
+@(private = "file")
+redial :: proc(s: ^Source) -> bool {
+	addr: posix.sockaddr_un
+	if len(s.path) >= len(addr.sun_path) do return false
+	addr.sun_family = .UNIX
+	copy(addr.sun_path[:], transmute([]c.char)s.path)
+
+	fd := posix.socket(.UNIX, .STREAM)
+	if fd < 0 do return false
+	if posix.connect(fd, (^posix.sockaddr)(&addr), size_of(addr)) != .OK {
+		posix.close(fd)
+		return false
+	}
+	set_flags(fd)
+	s.fd = fd
+	s.done = false
+	clear(&s.buf)
+	return true
+}
+
+// A bus connection. dbus.odin makes the connection; this puts it in the list
+// so it has an id and a lifecycle like everything else.
+src_dbus :: proc(ss: ^Sources, name: string, bus: ^Bus, fd: posix.FD,
+                 adapter: Adapter) -> ^Source {
+	return add(ss, new_clone(Source{
+		name = strings.clone(name), kind = .Dbus, fd = fd,
+		adapter = adapter, bus = bus,
+	}))
 }
 
 // Fire on a period. It carries no data, so the adapter's `tick` runs instead
@@ -200,18 +254,18 @@ src_timer :: proc(ss: ^Sources, name: string, every_ms: i64,
                   adapter: Adapter) -> (^Source, bool) {
 	return add(ss, new_clone(Source{
 		name = strings.clone(name), kind = .Timer, fd = -1,
-		adapter = adapter, every = every_ms, due = now_ms() + every_ms,
+		adapter = adapter, every = every_ms, base = every_ms, due = now_ms() + every_ms,
 	})), true
 }
 
 src_close :: proc(ss: ^Sources) {
-	for d in ss.buses do dbus_close(d)
-	delete(ss.buses)
 	for s in ss.list {
+		if s.kind == .Dbus do dbus_close(s)
 		if s.fd >= 0 do posix.close(s.fd)
 		if s.pid > 0 do posix.kill(s.pid, .SIGTERM)
 		for a in s.argv do delete(a)
 		delete(s.argv)
+		delete(s.path)
 		delete(s.buf)
 		delete(s.name)
 		free(s)
@@ -235,6 +289,12 @@ take :: proc(s: ^Source) -> ([]byte, bool) {
 		return nil, false
 
 	case Prefix:
+		// A zero unit would be consumed as zero bytes and asked for again
+		// forever. config_load rejects the values that produce one, and this
+		// is the second line of defence.
+		if f.header <= 0 || f.width <= 0 || f.at + f.width > f.header {
+			return nil, false
+		}
 		if len(s.buf) < f.header do return nil, false
 
 		size := 0
@@ -267,15 +327,22 @@ consumed :: proc(s: ^Source, unit: []byte) {
 
 src_fds :: proc(ss: ^Sources, dst: []posix.pollfd) -> int {
 	n := 0
+	dropped := 0
 	for s in ss.list {
-		if s.fd < 0 || s.done || n == len(dst) do continue
+		if s.fd < 0 || s.done do continue
+		if n == len(dst) {
+			dropped += 1
+			continue
+		}
 		dst[n] = {fd = s.fd, events = {.IN}}
 		n += 1
 	}
-	for d in ss.buses {
-		if n == len(dst) do break
-		dst[n] = {fd = d.fd, events = {.IN}}
-		n += 1
+	// Silently not reading a source looks exactly like a source with nothing
+	// to say.
+	if dropped > 0 && !ss.warned {
+		ss.warned = true
+		fmt.eprintfln("sources: %d beyond the poll set of %d are not being read",
+		              dropped, len(dst))
 	}
 	return n
 }
@@ -284,7 +351,7 @@ src_fds :: proc(ss: ^Sources, dst: []posix.pollfd) -> int {
 src_timeout :: proc(ss: ^Sources, now: i64) -> i32 {
 	best: i64 = -1
 	for s in ss.list {
-		if s.every == 0 do continue
+		if s.every == 0 || s.dead do continue
 		if s.kind == .Exec && !s.done do continue
 		left := max(0, s.due - now)
 		if best < 0 || left < best do best = left
@@ -303,16 +370,23 @@ emit_into :: proc(out: ^[dynamic]Emit, es: []Emit, src: int) {
 // the temp allocator and die with the loop pass.
 src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
+	ss.last = nil
 
-	for d in ss.buses {
-		if d.fd == fd {
-			dbus_ready(d, ss.vm, &out)
+	for s in ss.list {
+		if s.kind == .Dbus && s.fd == fd && !s.done {
+			if !dbus_ready(s, ss.vm, &out) {
+				// The connection dropped. Without this the fd stays
+				// readable and the loop spins.
+				s.done = true
+				s.dead = true
+			}
 			return out[:]
 		}
 	}
 
 	for s in ss.list {
 		if s.fd != fd || s.done do continue
+		ss.last = s
 
 		eof := false
 		chunk: [4096]byte
@@ -346,6 +420,11 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 		for {
 			unit, got := take(s)
 			if !got do break
+			if len(unit) == 0 {
+				fmt.eprintfln("source %s: framing yields nothing, stopped", s.name)
+				s.dead = true
+				break
+			}
 			if _, is_lines := s.framing.(Lines); is_lines {
 				emit_into(&out, vm_feed(ss.vm, s.adapter, string(unit)), s.id)
 			} else {
@@ -366,12 +445,9 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 			s.done = true
 
 			// A poll ends every cycle by design, and a one-shot seed ends
-			// once and stays true. Neither is a death. A socket closing is.
-			if s.kind == .Sock {
-				s.dead = true
-			} else if s.every > 0 {
-				s.due = now_ms() + s.every
-			}
+			// once and stays true. Neither is a death. A socket closing is,
+			// but it is worth dialling again before giving up.
+			if s.every > 0 do s.due = now_ms() + s.every
 		}
 		break
 	}
@@ -380,6 +456,36 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 
 // Run every timer that is due, and start every exec source whose period came
 // round again.
+// The watcher's list, through the adapter of the source that owns it.
+watcher_facts :: proc(ss: ^Sources) -> []Emit {
+	out := make([dynamic]Emit, context.temp_allocator)
+	for s in ss.list {
+		if s.kind == .Dbus && s.adapter != NO_ADAPTER {
+			watcher_pass(ss.vm, s.adapter, &out, s.id)
+		}
+	}
+	return out[:]
+}
+
+// A run that changed nothing is asked for less often. Anything new resets it.
+// By the source src_ready just handled: a run that ended has closed its fd.
+src_report :: proc(ss: ^Sources, changed: int) {
+	s := ss.last
+	if s == nil || !s.done do return                 // still reading, not a cycle
+	if s.kind != .Exec || s.base <= 0 || s.steady do return
+
+	if changed > 0 {
+		s.idle = 0
+		s.every = s.base
+		return
+	}
+	s.idle += 1
+	if s.idle >= IDLE_BEFORE_BACKOFF {
+		s.every = min(s.every * 2, min(s.base * BACKOFF_MAX_FACTOR,
+		                               i64(BACKOFF_CEILING_MS)))
+	}
+}
+
 // Sources that died since the last pass, so the store can mark their facts.
 src_reap :: proc(ss: ^Sources) -> []int {
 	out := make([dynamic]int, context.temp_allocator)
@@ -401,13 +507,20 @@ src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 		case s.kind == .Timer:
 			s.due = now + s.every
 			emit_into(&out, vm_call(ss.vm, s.adapter, "tick"), s.id)
-		case s.kind == .Exec && s.done && s.every > 0 && !s.dead:
-			if respawn(s) {
+		case s.done && s.every > 0:
+			// `dead` means the facts are stale. It does not mean stop
+			// trying. A socket keeps dialling, because whatever served it
+			// can come back at any moment. An exec that will not start three
+			// times running has nothing left to say.
+			if s.dead && s.kind != .Sock do continue
+
+			if s.kind == .Sock ? redial(s) : respawn(s) {
 				s.fails = 0
+				s.dead = false
+				s.reaped = false     // so a later death marks its facts again
 			} else {
 				s.fails += 1
 				s.due = now + s.every
-				// Three in a row means it is not coming back.
 				if s.fails >= 3 do s.dead = true
 			}
 		}

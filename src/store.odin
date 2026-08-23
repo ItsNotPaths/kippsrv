@@ -1,14 +1,11 @@
 // Current truth.
 //
-// A source repeats itself. `nmcli` re-prints every connection each time
-// anything changes, and a poll re-reads the same battery percentage all day.
-// The store keeps the last value for each fact and passes on only what moved,
-// so a repeat is silence.
-//
-// It also answers the dump, which is what lets a consumer connect at any
-// moment and know the truth without having heard the history.
+// Current truth: the last value of each fact, and only what moved goes out.
+// It also answers the dump, so a consumer can connect at any moment and know
+// the truth without having heard the history.
 package kippsrv
 
+import "core:fmt"
 import "core:strings"
 
 Fact :: struct {
@@ -17,11 +14,18 @@ Fact :: struct {
 	stale: bool,   // the source is gone. This is last-known, not current
 }
 
+// An adapter that keys on something unbounded would otherwise grow the store
+// until the daemon is killed. vocab/wm.txt warns against it; this bounds it.
+MAX_FACTS    :: 4096
+PROJECT_MS   :: 250    // shortest gap between two writes of the state file
+
 Store :: struct {
 	facts: map[string]Fact,
 	order: [dynamic]string,     // keys in the order first seen, so a dump is stable
 	path:  string,              // the state file, or "" for none
 	dirty: bool,
+	full:  bool,                // the cap was reported once
+	wrote: i64,                 // when the projection last landed
 }
 
 // A fact is identified by its kind and its positional subject. The attributes
@@ -73,10 +77,8 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 		}
 		st.dirty = true
 
-		// A retraction is its own kind. Sending the fact back with no
-		// attributes would be indistinguishable from a fact that has none,
-		// and a consumer must be able to tell "forget this" from "this is
-		// true and empty".
+		// Its own kind: a fact returned with no attributes is not
+		// distinguishable from one that has none.
 		o: Out
 		begin(&o, "drop")
 		for f in strings.split(k, "\t", context.temp_allocator) do add(&o, "%s", f)
@@ -91,6 +93,14 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 		delete(old.line)
 		st.facts[k] = {strings.clone(e.line), e.src, false}
 	} else {
+		if len(st.order) >= MAX_FACTS {
+			if !st.full {
+				st.full = true
+				fmt.eprintfln("store: %d facts, refusing more. An adapter is "+
+				              "keying on something unbounded.", MAX_FACTS)
+			}
+			return ""
+		}
 		owned := strings.clone(k)
 		st.facts[owned] = {strings.clone(e.line), e.src, false}
 		append(&st.order, owned)
@@ -118,8 +128,8 @@ stale_line :: proc(key: string) -> string {
 	return ok ? strings.clone(line, context.temp_allocator) : ""
 }
 
-// A source died. Its facts are last-known, not current, and a bar can show
-// them greyed rather than lie by removing a headphone that still exists.
+// A source died. Its facts are last-known, not gone: the headphone still
+// exists, we just cannot see it.
 store_stale :: proc(st: ^Store, src: int) -> []string {
 	out := make([dynamic]string, context.temp_allocator)
 	if src == 0 do return out[:]
@@ -139,6 +149,12 @@ store_stale :: proc(st: ^Store, src: int) -> []string {
 // this instead. Written once a pass, and only when something moved.
 store_project :: proc(st: ^Store) {
 	if !st.dirty || st.path == "" do return
+
+	// A busy desktop would otherwise rename this file hundreds of times a
+	// second, and every watcher of the directory would wake for each one.
+	now := now_ms()
+	if now - st.wrote < PROJECT_MS do return
+	st.wrote = now
 	st.dirty = false
 
 	b := strings.builder_make(context.temp_allocator)

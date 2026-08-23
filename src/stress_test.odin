@@ -321,3 +321,34 @@ a_consumer_cannot_forge_a_fact :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(got, "error\tbadcmd"),
 	               "a lowercase kind from a consumer must be refused")
 }
+
+// Focus moves between tags. Saying which one is focused without saying which
+// one no longer is leaves every tag ever visited focused, because each tag is
+// its own fact keyed by kind and subject.
+@(test)
+switching_tags_clears_the_last_one :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+
+	out, ok := run_fixture(v, "lua/wm/hypr.lua", "test/fmt/hypr-switch.txt")
+	if !testing.expect(t, ok) do return
+
+	// replay into a store, which is what a consumer effectively does
+	st: Store
+	defer store_close(&st)
+	for line in out do store_apply(&st, Emit{line, .State, 1})
+
+	lines := make([dynamic]string, context.temp_allocator)
+	store_each(&st, &lines)
+
+	focused := 0
+	for line in lines {
+		m, good := parse(line, context.temp_allocator)
+		if good && m.kind == "tag" && strings.contains(m.attr["state"], "focused") {
+			focused += 1
+		}
+	}
+	fmt.printfln("\n--- after 1 -> 2 -> 3, tags marked focused: %d", focused)
+	for line in lines do fmt.printfln("    %s", line)
+	testing.expect_value(t, focused, 1)
+}

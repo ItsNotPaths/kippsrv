@@ -99,3 +99,40 @@ a_missing_adapter_fails_without_dying :: proc(t: ^testing.T) {
 	_, ok := vm_load(v, "lua/wm/nothing-here.lua")
 	testing.expect(t, !ok, "a missing file must fail, not crash")
 }
+
+// A script that never returns must not wedge the daemon. The sandbox keeps a
+// descriptor out of a script, which is a different thing entirely.
+@(test)
+a_runaway_script_is_stopped :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+
+	a, ok := vm_load(v, "test/lua/runaway.lua")
+	if !testing.expect(t, ok, "vm_load") do return
+	defer vm_unload(v, a)
+
+	out := vm_feed(v, a, "anything")     // returns rather than hanging
+	testing.expect_value(t, len(out), 0)
+
+	// and the VM still works afterwards
+	testing.expect(t, vm_eval(v, `k.emit("after", "ok")`))
+	testing.expect_value(t, len(v.emitted), 1)
+}
+
+// The step hook does not stop one greedy C call. `string.rep("x", 1e9)` is a
+// single instruction to the VM, so the allocator cap is what stops it.
+@(test)
+a_greedy_script_is_stopped :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+
+	before := v.mem.used
+	testing.expect(t, !vm_eval(v, `local s = string.rep("x", 400000000)`),
+	               "an allocation past the cap must fail the call")
+	testing.expect(t, v.mem.used < MEM_CAP, "the cap held")
+
+	// and the VM still works afterwards
+	testing.expect(t, vm_eval(v, `k.emit("after", "ok")`))
+	testing.expect_value(t, len(v.emitted), 1)
+	testing.expect(t, v.mem.used < before + (1 << 20), "the memory came back")
+}

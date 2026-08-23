@@ -120,6 +120,22 @@ An adapter file is loaded once however many sources name it, so the seed and
 the stream above share one state. A source with `every` runs again on that
 period, which is how a command that ends becomes a poll.
 
+**A poll that learns nothing is asked for less often.** After three quiet
+cycles the period doubles, up to sixteen times the configured one or a minute,
+whichever is smaller. Anything new puts it straight back. `steady = true` turns
+that off for a source that must be sampled at a fixed rate.
+
+Measured on this machine, 30 sources polling one command every 2 seconds:
+
+| | CPU |
+| --- | --- |
+| fixed period | 2.2% of a core, forever |
+| with backoff, settled | 0.5% |
+
+The saving is not the CPU so much as the wakeups. 15 process creations a
+second leaves no idle window longer than about 66 ms, and deep C-states never
+engage. A status bar is the last thing that should keep a laptop awake.
+
 ## The store
 
 A source repeats itself. `nmcli` reprints every connection whenever anything
@@ -139,10 +155,15 @@ adapter says:
 | `k.event` | something happened. Passed on, never stored |
 | `k.drop` | this fact no longer exists |
 
-Two things follow. A consumer connecting at any moment reads the full current
-state and then the changes, so it never has to have heard the history. And a
-source that repeats itself costs nothing downstream, which is the other half of
-the throughput answer — most fast desktop traffic is the same value re-sent.
+A consumer connecting at any moment reads the full current state and then the
+changes, so it never has to have heard the history.
+
+**The store is a correctness feature, not a performance one.** A repeat costs
+nothing *downstream*: the socket and every consumer are spared. It costs the
+same as ever *upstream*. A poll still pays a fork, an exec, a read, a Lua call
+and two parses to find out that nothing moved, and no amount of deduplication
+touches that. Prefer `dbus` or `sock` to `every` wherever the source offers
+one.
 
 The projection is written from the same table, once a pass, and only when
 something moved.
@@ -188,9 +209,9 @@ A window manager adapter converts a foreign format into the kinds listed in
 parser and never a file per window manager. Swapping Hyprland for dwl is one
 adapter file and one line of configuration, and no consumer notices.
 
-Nothing in the code enforces that agreement, so `make tenet-vocab` does. It is
-a grep: `lua/<domain>/<impl>.lua` may emit only the kinds in
-`vocab/<domain>.txt`. A new kind is an edit to that file, which is a deliberate
+Nothing in the code enforces that agreement, so `make lint` makes it
+visible. It is a grep: `lua/<domain>/<impl>.lua` may emit only the kinds in
+`vocab/<domain>.txt`. A kind built from a variable is invisible to it. A new kind is an edit to that file, which is a deliberate
 act. It has already caught drift — the first two window manager adapters
 written here shared exactly one kind out of nine.
 
@@ -201,7 +222,7 @@ it.
 
 **These files are a lint, not a schema.** The daemon contains no vocabulary and
 consults nothing at runtime. An adapter may emit a kind no one has heard of and
-it reaches a consumer untouched. `make tenet-vocab` covers `lua/` and nothing
+it reaches a consumer untouched. `make lint` covers `lua/` and nothing
 else: an adapter a user writes lives in their own configuration directory, is
 never seen by it, and may emit whatever it likes. There is a test that fails if
 that ever stops being true.
@@ -306,11 +327,31 @@ over a chunk instead of a line.
 ## The fence
 
 A script gets parsed lines and returns fields. It never holds a descriptor and
-never joins a line, so it cannot stall the loop and cannot forge a fact with an
-embedded tab. `io`, `os`, `package`, `debug`, `coroutine`, `require`, `dofile`,
-`loadfile` and `load` do not exist inside it.
+never joins a line, so it cannot reach the filesystem or the network and cannot
+forge a fact with an embedded tab. `io`, `os`, `package`, `debug`, `coroutine`,
+`require`, `dofile`, `loadfile` and `load` do not exist inside it.
 
-`make tenet` proves all three of those mechanically rather than trusting them.
+**The sandbox does not stop a script from spending too much.** Dropping `io`
+says nothing about `while true do end`, and nothing about
+`string.rep("x", 1e9)`. Those are three different guarantees and the first does
+not imply either of the others.
+
+| Guard | Stops |
+| --- | --- |
+| the sandbox | reaching a file, a socket, or another process |
+| a count hook, about 2M instructions per call | a script that never returns |
+| a capped allocator, 64 MB | a script that asks for everything |
+
+The second does not cover the third: `string.rep` is one C call, and a count
+hook only fires between VM instructions. Refusing an allocation makes Lua
+raise an ordinary memory error, which `pcall` catches like any other, so the
+loop carries on either way.
+
+`make lint` makes drift in the sandbox, the descriptor rule and the surface
+size visible in a diff. It does not prove them: a determined author routes
+around a grep. What it buys is that they have to notice they are doing it,
+which moves the trust from memory to review. The two budgets have their own
+tests.
 
 ## Build
 

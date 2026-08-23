@@ -8,6 +8,7 @@
 -- once, and socket2 streams the changes. kippsrv loads the adapter once and
 -- attaches both sources to it, so they share this state.
 local mon = nil          -- focused monitor
+local focused = {}       -- the tag each monitor is on, so the last one clears
 local pending = nil      -- appid/title seen before we knew the monitor
 local seed = {}          -- JSON lines waiting for the end of the batch
 
@@ -15,6 +16,17 @@ local function split2(s)
 	local a, b = s:match("^([^,]*),(.*)$")
 	if a then return a, b end
 	return s, nil
+end
+
+-- Focus moves. Saying the new tag is focused without saying the old one is
+-- not leaves every tag ever visited focused, because the store keys on kind
+-- plus subject and each tag is its own fact.
+local function set_tag(m, id)
+	local was = focused[m]
+	if was == id then return end
+	if was then k.emit("tag", m, was, "state=occupied") end
+	focused[m] = id
+	k.emit("tag", m, id, "state=focused,occupied")
 end
 
 local function show(appid, text)
@@ -38,7 +50,7 @@ return {
 			local m, ws = split2(data)
 			mon = m
 			k.emit("focus", m)
-			if ws then k.emit("tag", m, ws, "state=focused,occupied") end
+			if ws then set_tag(m, ws) end
 			if pending then
 				show(pending[1], pending[2])
 				pending = nil
@@ -46,7 +58,15 @@ return {
 
 		elseif ev == "workspacev2" then
 			local id = split2(data)
-			if mon then k.emit("tag", mon, id, "state=focused,occupied") end
+			if mon then set_tag(mon, id) end
+
+		elseif ev == "destroyworkspacev2" then
+			-- Hyprland removes an empty workspace. The fact goes with it.
+			local id = split2(data)
+			for m, t in pairs(focused) do
+				if t == id then focused[m] = nil end
+			end
+			if mon then k.drop("tag", mon, id) end
 
 		elseif ev == "activewindow" then
 			show(split2(data))

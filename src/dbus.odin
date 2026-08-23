@@ -1,11 +1,7 @@
 // D-Bus, through sd-bus.
 //
-// sd-bus is one API with two implementations: libsystemd on a systemd
-// machine, basu anywhere else. The source below is the same either way, so
-// the target's init system is a link-time question.
-//
-// A signal is turned into the JSON busctl already prints, so one adapter
-// works whether a fact arrives by poll or by signal.
+// A signal becomes the JSON busctl already prints, so one adapter works
+// whether a fact arrives by poll or by signal.
 package kippsrv
 
 import "base:runtime"
@@ -18,10 +14,7 @@ import "core:sys/posix"
 Bus :: struct {}
 BMsg :: struct {}
 
-// sd-bus has two implementations. libsystemd is the default because it is
-// what a systemd machine already has. basu is the same API without systemd:
-//
-//     odin build src -define:BASU=true
+// libsystemd by default, basu with -define:BASU=true. Same API either way.
 //
 // The whole dependency is these 15 symbols. Nothing else in kippsrv touches
 // the bus, and a source that polls `busctl` instead needs none of it:
@@ -72,6 +65,8 @@ foreign sdbus {
 	bus_message_open_container  :: proc(m: ^BMsg, type: u8, contents: cstring) -> c.int ---
 	bus_message_close_container :: proc(m: ^BMsg) -> c.int ---
 	bus_send                    :: proc(bus: ^Bus, m: ^BMsg, cookie: ^u64) -> c.int ---
+	// _strv, not the varargs form, for the reason above.
+	bus_emit_properties_changed_strv :: proc(bus: ^Bus, path, iface: cstring, names: [^]cstring) -> c.int ---
 }
 
 // libsystemd checks that a vtable was built against its own header by
@@ -243,9 +238,15 @@ w_message :: proc(m: ^BMsg, allocator := context.allocator) -> string {
 		t: u8
 		contents: cstring
 		if bus_message_peek_type(m, &t, &contents) <= 0 do break
+		mark := strings.builder_len(b)
 		if !first do strings.write_byte(&b, ',')
+		if !w_value(&b, m) {
+			// Half a value would leave a trailing comma or an unbalanced
+			// document. An adapter is better handed nothing.
+			resize(&b.buf, mark)
+			return ""
+		}
 		first = false
-		if !w_value(&b, m) do break
 	}
 	strings.write_string(&b, "]}")
 	return strings.to_string(b)
@@ -257,17 +258,10 @@ str_or :: proc(s: cstring) -> string {
 
 // ----------------------------------------------------------------- source
 
-Dbus :: struct {
-	bus:     ^Bus,
-	fd:      posix.FD,
-	adapter: Adapter,
-	name:    string,
-}
-
 // Connect and subscribe. `matches` are D-Bus match rules, the same strings
 // busctl and dbus-monitor take.
-dbus_open :: proc(name: string, system: bool, matches: []string,
-                  adapter: Adapter) -> (^Dbus, bool) {
+dbus_open :: proc(ss: ^Sources, name: string, system: bool, matches: []string,
+                  adapter: Adapter) -> (^Source, bool) {
 	bus: ^Bus
 	r := system ? bus_default_system(&bus) : bus_default_user(&bus)
 	if r < 0 || bus == nil {
@@ -284,31 +278,23 @@ dbus_open :: proc(name: string, system: bool, matches: []string,
 
 	odin_ctx = context
 
-	d := new(Dbus)
-	d.bus = bus
-	d.fd = posix.FD(bus_get_fd(bus))
-	d.adapter = adapter
-	d.name = strings.clone(name)
-	return d, true
+	return src_dbus(ss, name, bus, posix.FD(bus_get_fd(bus)), adapter), true
 }
 
-dbus_close :: proc(d: ^Dbus) {
-	if d == nil do return
-	bus_unref(d.bus)
-	delete(d.name)
-	free(d)
-}
-
-dbus_fd :: proc(d: ^Dbus) -> posix.FD {
-	return d == nil ? -1 : d.fd
+dbus_close :: proc(s: ^Source) {
+	if s == nil || s.bus == nil do return
+	bus_unref(s.bus)
+	s.bus = nil
 }
 
 // Drain every message waiting and hand each to the adapter as one JSON line.
-dbus_ready :: proc(d: ^Dbus, vm: ^Vm, out: ^[dynamic]Emit) {
+// false means the connection is gone, not that nothing was waiting.
+dbus_ready :: proc(s: ^Source, vm: ^Vm, out: ^[dynamic]Emit) -> bool {
 	for {
 		m: ^BMsg
-		r := bus_process(d.bus, &m)
-		if r <= 0 do return
+		r := bus_process(s.bus, &m)
+		if r < 0 do return false
+		if r == 0 do return true
 		if m == nil do continue
 		defer bus_message_unref(m)
 
@@ -318,8 +304,10 @@ dbus_ready :: proc(d: ^Dbus, vm: ^Vm, out: ^[dynamic]Emit) {
 		bus_message_rewind(m, true)
 
 		line := w_message(m, context.temp_allocator)
-		for e in vm_feed(vm, d.adapter, line) {
-			append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, 0})
+		if line == "" do continue      // the message would not convert
+		for e in vm_feed(vm, s.adapter, line) {
+			// stamped with the source, so its death can mark these stale
+			append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, s.id})
 		}
 	}
 }

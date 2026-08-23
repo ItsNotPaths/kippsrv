@@ -25,6 +25,7 @@ Src_Spec :: struct {
 	dbus:    []string,   // match rules, or
 	system:  bool,       // the system bus instead of the session bus
 	timer:   bool,       // a bare heartbeat
+	steady:  bool,       // keep the period fixed, do not back off when idle
 	watcher: bool,       // own the StatusNotifierWatcher name on this bus
 	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
@@ -118,12 +119,21 @@ field_framing :: proc(L: ^lua.State) -> Framing {
 	case "raw":
 		return Raw{}
 	case "prefix":
-		return Prefix{
+		p := Prefix{
 			header = int(field_int(L, "header")),
 			at     = int(field_int(L, "at")),
 			width  = int(field_int(L, "width")),
 			le     = field_bool(L, "le"),
 		}
+		// A header that holds no length field would frame nothing and be
+		// asked for again forever.
+		if p.header <= 0 || p.width <= 0 || p.at < 0 || p.at + p.width > p.header {
+			fmt.eprintfln("config: prefix framing needs 0 <= at, 0 < width, " +
+			              "at+width <= header. Got header=%d at=%d width=%d. " +
+			              "Falling back to lines.", p.header, p.at, p.width)
+			return Lines{}
+		}
+		return p
 	}
 	return Lines{}
 }
@@ -168,6 +178,7 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 		s.dbus = field_list(L, "dbus")
 		s.system = field_bool(L, "system")
 		s.timer = field_bool(L, "timer")
+		s.steady = field_bool(L, "steady")
 		s.watcher = field_bool(L, "watcher")
 		s.bus_name, _ = field_str(L, "bus_name")
 		s.every = field_int(L, "every")
@@ -220,20 +231,25 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 		ok: bool
 		switch {
 		case len(spec.exec) > 0:
-			_, ok = src_exec(ss, spec.name, spec.exec, a, spec.framing, spec.every)
+			src: ^Source
+			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.framing, spec.every)
+			if ok do src.steady = spec.steady
 		case spec.sock != "":
 			_, ok = src_sock(ss, spec.name, spec.sock, a, spec.framing)
 		case len(spec.dbus) > 0 || spec.watcher:
-			d: ^Dbus
-			d, ok = dbus_open(spec.name, spec.system, spec.dbus, a)
-			if ok {
-				append(&ss.buses, d)
-				if spec.watcher {
-					ok = watcher_start(d, spec.bus_name != "" \
-						? spec.bus_name : WATCHER_NAME)
-				}
+			d: ^Source
+			d, ok = dbus_open(ss, spec.name, spec.system, spec.dbus, a)
+			if ok && spec.watcher {
+				ok = watcher_start(d, spec.bus_name != "" \
+					? spec.bus_name : WATCHER_NAME)
 			}
 		case spec.timer:
+			// every defaults to 0, and a source with no period is skipped by
+			// src_timeout, so the timer would simply never fire.
+			if spec.every <= 0 {
+				fmt.eprintfln("config: timer %q needs every > 0, skipped", spec.name)
+				continue
+			}
 			_, ok = src_timer(ss, spec.name, spec.every, a)
 		case:
 			fmt.eprintfln("config: source %q names no exec, sock or timer", spec.name)

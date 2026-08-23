@@ -26,38 +26,50 @@ basu/build/libbasu.a:
 		-Daudit=disabled -Dlibcap=disabled
 	ninja -C basu/build libbasu.a
 
-check: kippsrv tenet
+check: kippsrv lint
 	$(ODIN) test src
 	./check.sh
 
-tenet: tenet-core tenet-fd tenet-api tenet-vocab
+lint: lint-core lint-fd lint-api lint-vocab
 
-# Pillar 1: the core must not learn a domain noun. Comments are stripped
-# first: prose that names a noun as an example is explaining the boundary,
-# not crossing it.
-tenet-core:
-	@fail=0; for f in $(CORE); do \
-		if sed 's|//.*||' $$f | grep -nqE '\b(tag|workspace|volume|bluetooth|battery|theme)\b'; then \
-			echo "$$f names a domain noun in code"; fail=1; \
-		fi; \
+# Pillar 1: the core must not name a domain kind.
+#
+# The list is derived from vocab/, not typed here. A hand-kept list decays as
+# the vocabulary grows, because each new kind is one more word to remember. A
+# derived one gets stronger: declaring a kind forbids it in the core that day.
+#
+# It matches quoted string literals, because naming a kind means writing one.
+# Comments are stripped first: prose that names a kind as an example explains
+# the boundary rather than crossing it.
+lint-core:
+	@kinds=$$(sed 's/#.*//' vocab/*.txt | tr -d ' \t' | grep -v '^$$' | \
+		sort -u | paste -sd'|'); \
+	fail=0; for f in $(CORE); do \
+		hit=$$(sed 's|//.*||' $$f | grep -oE "\"($$kinds)\"" | sort -u | tr '\n' ' '); \
+		if [ -n "$$hit" ]; then echo "$$f names domain kinds: $$hit"; fail=1; fi; \
 	done; \
 	[ $$fail -eq 0 ] || exit 1; \
-	echo "ok    core knows no domain"
+	echo "ok    core names none of $$(sed 's/#.*//' vocab/*.txt | tr -d ' \t' | \
+		grep -v '^$$' | sort -u | wc -l) declared kinds"
 
 # A12: a script never owns a descriptor. The VM file must not reach posix.
-tenet-fd:
+lint-fd:
 	@! grep -n 'posix' src/lua.odin \
 		|| { echo "the VM file reached posix"; exit 1; }
 	@echo "ok    scripts hold no descriptor"
 
 # ideas.txt puts wweft's script surface at about forty tagged lines.
-tenet-api:
-	@n=$$(grep -c '@api' src/lua.odin); \
-	[ "$$n" -le 60 ] || { echo "api is $$n tagged lines, cap is 60"; exit 1; }; \
-	echo "ok    api is $$n tagged lines"
+#
+# It counts registrations on the k table, not @api comments. Counting comments
+# measures the discipline this check exists to replace: a call added without a
+# comment would pass at the old number.
+lint-api:
+	@n=$$(grep -c 'lua.pushcfunction' src/lua.odin); \
+	[ "$$n" -le 12 ] || { echo "script surface is $$n functions, cap is 12"; exit 1; }; \
+	echo "ok    script surface is $$n functions"
 
 # An adapter may emit only the kinds its domain declares.
-tenet-vocab:
+lint-vocab:
 	@./vocab.sh
 
 clean:
@@ -66,4 +78,4 @@ clean:
 distclean: clean
 	rm -rf basu
 
-.PHONY: check static tenet tenet-core tenet-fd tenet-api tenet-vocab clean distclean
+.PHONY: check static lint lint-core lint-fd lint-api lint-vocab clean distclean

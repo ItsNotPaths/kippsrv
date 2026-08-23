@@ -122,3 +122,35 @@ timer_source_fires_on_its_period :: proc(t: ^testing.T) {
 	fmt.printfln("--- timer, 20ms over 120ms -> %d beats", got)
 	testing.expect(t, got >= 4 && got <= 8, "roughly one beat per period")
 }
+
+// A poll that learns nothing is asked for less often. Anything new puts the
+// source straight back to its configured rate.
+@(test)
+an_idle_source_backs_off :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+	ss := Sources{vm = v}
+	defer src_close(&ss)
+
+	a, _ := vm_load(v, "lua/wm/example.lua")
+	s, ok := src_exec(&ss, "p", {"true"}, a, Lines{}, 2000)
+	if !testing.expect(t, ok) do return
+
+	s.done = true
+	ss.last = s
+
+	testing.expect_value(t, s.every, i64(2000))
+	for _ in 0 ..< 3 do src_report(&ss, 0)      // three quiet cycles
+	testing.expect_value(t, s.every, i64(4000))
+	for _ in 0 ..< 3 do src_report(&ss, 0)
+	testing.expect_value(t, s.every, i64(32000))
+
+	src_report(&ss, 1)                          // something changed
+	testing.expect_value(t, s.every, i64(2000))
+	testing.expect_value(t, s.idle, 0)
+
+	// a source told to stay steady is left alone
+	s.steady = true
+	for _ in 0 ..< 6 do src_report(&ss, 0)
+	testing.expect_value(t, s.every, i64(2000))
+}

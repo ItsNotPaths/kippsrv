@@ -92,7 +92,9 @@ if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
 	cat > "$WCONF" <<WCONFEOF
 return {
 	socket = "$WSOCK",
-	sources = { { name = "watcher", watcher = true, bus_name = "$WNAME" } },
+	state  = "$WSOCK.state",
+	sources = { { name = "watcher", watcher = true, bus_name = "$WNAME",
+	              adapter = "lua/tray/snw.lua" } },
 }
 WCONFEOF
 	./kippsrv "$WCONF" 2>/dev/null &
@@ -103,14 +105,21 @@ WCONFEOF
 		>/dev/null 2>&1
 	got=$(busctl --user get-property "$WNAME" /StatusNotifierWatcher \
 		org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null)
+	tray=$(grep -c '^tray' "$WSOCK.state" 2>/dev/null || echo 0)
 	if printf '%s' "$got" | grep -q 'org.test.Item'; then
 		echo "ok    watcher owns a name and registers an item"
 	else
 		echo "FAIL  watcher did not register ($got)"
 		FAILS=$((FAILS + 1))
 	fi
+	if [ "$tray" -ge 1 ]; then
+		echo "ok    the tray kind is named in Lua, not in the core"
+	else
+		echo "FAIL  no tray fact reached the store"
+		FAILS=$((FAILS + 1))
+	fi
 	kill "$WSRV" 2>/dev/null
-	rm -f "$WSOCK" "$WCONF"
+	rm -f "$WSOCK" "$WSOCK.state" "$WCONF"
 else
 	echo "skip  watcher (no busctl or no session bus)"
 fi

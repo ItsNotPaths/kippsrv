@@ -1,7 +1,6 @@
 // The kipp wire. See the kipp repo's SPEC.md.
 //
-// This is our own implementation, not a vendored one. The protocol is the
-// contract, so two implementations that drift still interoperate.
+// Our own implementation, not a vendored one: the protocol is the contract.
 package kippsrv
 
 import "core:c"
@@ -166,9 +165,8 @@ Conn :: struct {
 	eof: bool,            // it will send no more commands. It still reads
 }
 
-// A unix socket accounts per message, not per byte: one send of one line
-// costs about 766 bytes of kernel buffer. Batching a pass into one send holds
-// roughly ten times as many lines before a stalled consumer runs out.
+// A unix socket accounts per message, not per byte: one send costs about 766
+// bytes of kernel buffer whatever it carries. A pass goes out in one send.
 MAX_OUT :: 256 * 1024
 
 Server :: struct {
@@ -258,7 +256,10 @@ serve :: proc(path, greet: string) -> (s: ^Server, ok: bool) {
 
 stop :: proc(s: ^Server) {
 	if s == nil do return
-	for &c in s.conns do posix.close(c.fd)
+	for &c in s.conns {
+		posix.close(c.fd)
+		delete(c.out)      // drop() does this; stop() used to forget
+	}
 	posix.close(s.fd)
 	posix.unlink(strings.clone_to_cstring(s.path, context.temp_allocator))
 	delete(s.conns)
@@ -364,18 +365,29 @@ accept_one :: proc(s: ^Server) {
 	send_to(s, fd, "sync\tstate")
 }
 
+// By fd, not by index, for the same reason srv_ready is. Sending an error can
+// drop this very connection, and the next turn of the loop would then index a
+// different one or run off the end.
 @(private = "file")
-read_conn :: proc(s: ^Server, i: int) {
+read_conn :: proc(s: ^Server, fd: posix.FD) {
 	line: [MAX_LINE]byte
 
+	find :: proc(s: ^Server, fd: posix.FD) -> int {
+		for c, i in s.conns do if c.fd == fd do return i
+		return -1
+	}
+
 	for {
+		i := find(s, fd)
+		if i < 0 do return          // it went away while we were working
+
 		n, what := rd_take(&s.conns[i].r, line[:])
 		switch what {
 		case .TooLong:
-			send_error(s, s.conns[i].fd, "toolong", "", "line over 1024 bytes")
+			send_error(s, fd, "toolong", "", "line over 1024 bytes")
 			continue
 		case .Need:
-			switch rd_pull(s.conns[i].fd, &s.conns[i].r) {
+			switch rd_pull(fd, &s.conns[i].r) {
 			case .Empty: return
 			case .Gone:
 				// EOF on the read side means it will send nothing more. It
@@ -384,24 +396,24 @@ read_conn :: proc(s: ^Server, i: int) {
 				// it until a write fails.
 				s.conns[i].eof = true
 				return
-			case .Data:  continue
+			case .Data: continue
 			}
 		case .Line:
 			m, good := parse(string(line[:n]), context.temp_allocator)
 			if !good {
-				send_error(s, s.conns[i].fd, "badcmd", "", "unparsable line")
+				send_error(s, fd, "badcmd", "", "unparsable line")
 				continue
 			}
 			// A consumer sends commands, which are uppercase. It may not
 			// send a fact. Leaving this to each handler makes the direction
-			// rule a convention; here it is a boundary, so nothing that
+			// rule a convention. Here it is a boundary, so nothing that
 			// connects can forge state for everything else that reads.
 			if !is_cmd(&m) {
-				send_error(s, s.conns[i].fd, "badcmd", m.kind,
+				send_error(s, fd, "badcmd", m.kind,
 				           "a consumer sends commands, not facts")
 				continue
 			}
-			if s.on_cmd != nil do s.on_cmd(s, &m, s.conns[i].fd)
+			if s.on_cmd != nil do s.on_cmd(s, &m, fd)
 		}
 	}
 }
@@ -413,9 +425,9 @@ srv_ready :: proc(s: ^Server, fd: posix.FD) {
 		accept_one(s)
 		return
 	}
-	for c, i in s.conns {
+	for c in s.conns {
 		if c.fd == fd {
-			read_conn(s, i)
+			read_conn(s, fd)
 			return
 		}
 	}

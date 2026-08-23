@@ -11,6 +11,11 @@ return {
 	state  = "$XDG_RUNTIME_DIR/kippsrv.state",
 
 	sources = {
+		-- The tray. Owning the name needs compiled code; naming the kind
+		-- does not, so the registrations arrive at an adapter like anything
+		-- else.
+		{ name = "tray", watcher = true, adapter = "lua/tray/snw.lua" },
+
 		-- Hyprland. The first reads what is true now, the second the changes.
 		{ name = "wm-seed", adapter = "lua/wm/hypr.lua",
 		  exec = {"hyprctl", "monitors", "-j"} },

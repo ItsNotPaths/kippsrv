@@ -22,6 +22,14 @@ command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 	send_error(s, fd, "badcmd", m.kind, "no adapter takes commands yet")
 }
 
+@(private = "file")
+the_loop: ^Loop
+
+@(private = "file")
+on_signal :: proc "c" (sig: posix.Signal) {
+	if the_loop != nil do the_loop.running = false
+}
+
 main :: proc() {
 	// A crash would otherwise write every window title and SSID we hold into
 	// a core file that outlives the session. This is per-process: it does
@@ -64,6 +72,15 @@ main :: proc() {
 
 	fmt.eprintfln("serving %s, %d sources", cfg.socket, n)
 
+	// Without this, SIGTERM kills the process outright: the socket file is
+	// left behind, the store is not closed, and no child is signalled.
 	l := Loop{srv = srv, src = &ss, store = &store}
+
+	// Without this, SIGTERM kills the process outright: the socket file is
+	// left behind, the store is not closed, and no child is signalled.
+	the_loop = &l
+	posix.signal(.SIGINT, on_signal)
+	posix.signal(.SIGTERM, on_signal)
+
 	run(&l)
 }

@@ -1,13 +1,10 @@
 // org.kde.StatusNotifierWatcher.
 //
-// This is the one thing `busctl` cannot do for us: own a well-known name and
-// answer calls on it. A tray application looks for this name once, at its own
-// startup, and never again. If nobody owns it, no icon ever registers.
+// Owning a well-known name is the one thing `busctl` cannot do for us. A tray
+// application looks for this name once, at its own startup: if nobody owns it,
+// no icon ever registers.
 //
-// The core learns "StatusNotifierItem" here, and that is allowed. It is the
-// name of a protocol we speak, like D-Bus itself or kipp. It is not a noun of
-// the desktop: nothing here knows what a tray is for or how one is drawn. The
-// registered names leave as kipp facts and the shell decides the rest.
+// The kind those registrations become is named in lua/tray/snw.lua, not here.
 package kippsrv
 
 import "core:c"
@@ -20,10 +17,9 @@ WATCHER_IFACE :: "org.kde.StatusNotifierWatcher"
 
 // ----------------------------------------------------------- the vtable
 //
-// The two sd-bus implementations do not agree on this struct. libsystemd is
-// 56 bytes and carries parameter names and a format reference. basu is 48 and
-// does not. sd_bus_add_object_vtable rejects a mismatch at run time, not at
-// compile time, so the layout follows the same switch as the library.
+// libsystemd is 56 bytes and carries parameter names and a format reference.
+// basu is 48 and does not. sd_bus_add_object_vtable rejects a mismatch at run
+// time, so the layout follows the same switch as the library.
 
 when #config(BASU, false) {
 	VT_Start :: struct {
@@ -96,7 +92,8 @@ Watcher :: struct {
 	bus:     ^Bus,
 	items:   [dynamic]string,   // "service/path" as the protocol gives them
 	dropped: [dynamic]string,   // left the bus, and the store must be told
-	hosts:   int,
+	hosts:   [dynamic]string,   // bus names, so one that exits stops counting
+	dirty:   bool,            // something changed, so the adapter is owed a line
 }
 
 @(private = "file")
@@ -129,6 +126,7 @@ on_register_item :: proc "c" (m: ^BMsg, user: rawptr, err: rawptr) -> c.int {
 		delete(full)
 	} else {
 		append(&w.items, full)
+		changed()
 		emit_signal_s("StatusNotifierItemRegistered", full)
 	}
 	reply_ok(m)
@@ -141,7 +139,11 @@ on_register_host :: proc "c" (m: ^BMsg, user: rawptr, err: rawptr) -> c.int {
 
 	arg: cstring
 	bus_message_read_basic(m, 's', &arg)
-	w.hosts += 1
+
+	who := str_or(bus_message_get_sender(m))
+	for h in w.hosts do if h == who do break
+	append(&w.hosts, strings.clone(who))
+	changed()
 	emit_signal_s("StatusNotifierHostRegistered", "")
 	reply_ok(m)
 	return 1
@@ -174,7 +176,7 @@ get_items :: proc "c" (bus: ^Bus, path, iface, prop: cstring,
 get_host_registered :: proc "c" (bus: ^Bus, path, iface, prop: cstring,
                                  reply: ^BMsg, user: rawptr, err: rawptr) -> c.int {
 	context = odin_ctx
-	v := b32(w.hosts > 0)
+	v := b32(len(w.hosts) > 0)
 	bus_message_append_basic(reply, 'b', rawptr(&v))
 	return 1
 }
@@ -204,8 +206,7 @@ emit_signal_s :: proc(member: string, arg: string) {
 	bus_send(w.bus, msg, nil)
 }
 
-// A registered item that leaves the bus must leave the list. An application
-// that exits does not unregister, so this is the only way to notice.
+// An application that exits does not unregister, so this is the only notice.
 watcher_notice :: proc(m: ^BMsg) {
 	if w.bus == nil do return
 	if str_or(bus_message_get_member(m)) != "NameOwnerChanged" do return
@@ -216,7 +217,9 @@ watcher_notice :: proc(m: ^BMsg) {
 	if bus_message_read_basic(m, 's', &new_owner) < 0 do return
 	if new_owner != nil && len(string(new_owner)) > 0 do return   // it moved, not left
 
-	gone := string(name)
+	// The separator matters. ":1.4" is a prefix of ":1.42/..." and unique
+	// names are handed out in sequence, so neighbours collide.
+	gone := strings.concatenate({string(name), "/"}, context.temp_allocator)
 	for i := 0; i < len(w.items); i += 1 {
 		if !strings.has_prefix(w.items[i], gone) do continue
 		emit_signal_s("StatusNotifierItemUnregistered", w.items[i])
@@ -225,15 +228,43 @@ watcher_notice :: proc(m: ^BMsg) {
 		append(&w.dropped, w.items[i])
 		ordered_remove(&w.items, i)
 		i -= 1
+		changed()
 	}
+
+	for i := 0; i < len(w.hosts); i += 1 {
+		if w.hosts[i] != string(name) do continue
+		delete(w.hosts[i])
+		ordered_remove(&w.hosts, i)
+		i -= 1
+		changed()
+	}
+}
+
+// The properties are declared as emitting PropertiesChanged. A client that
+// waits for the signal rather than polling depends on it being sent.
+@(private = "file")
+changed :: proc() {
+	w.dirty = true
+	if w.bus == nil do return
+
+	names := []cstring{"RegisteredStatusNotifierItems", "IsStatusNotifierHostRegistered", nil}
+	bus_emit_properties_changed_strv(w.bus, WATCHER_PATH, WATCHER_IFACE, raw_data(names))
 }
 
 // ----------------------------------------------------------------- start
 
-watcher_start :: proc(d: ^Dbus, name := WATCHER_NAME) -> bool {
+watcher_start :: proc(d: ^Source, name := WATCHER_NAME) -> bool {
+	// One watcher. Its state is one table, so a second would answer the
+	// first bus's calls from the second's list.
+	if w.bus != nil {
+		fmt.eprintfln("watcher: already owning a name, %q refused", name)
+		return false
+	}
 	w.bus = d.bus
 	w.items = make([dynamic]string)
 	w.dropped = make([dynamic]string)
+	w.hosts = make([dynamic]string)
+	w.dirty = true
 
 	vt := make([]Vtable, 10)
 	vt[0] = {head = vt_head(VT_START, 0)}
@@ -285,35 +316,28 @@ watcher_start :: proc(d: ^Dbus, name := WATCHER_NAME) -> bool {
 	return true
 }
 
-// Everything registered, as kipp facts. The store drops the repeats, so this
-// runs every pass and costs nothing when nothing changed.
-watcher_pass :: proc() -> []Emit {
-	out := make([dynamic]Emit, context.temp_allocator)
-	if w.bus == nil do return out[:]
-	watcher_facts(&out)
-	return out[:]
-}
+// What is registered, as one JSON line for an adapter to name. "items" and
+// "dropped" are facts about a D-Bus interface, not nouns of the desktop.
+watcher_pass :: proc(vm: ^Vm, a: Adapter, out: ^[dynamic]Emit, src: int) {
+	if w.bus == nil || !w.dirty do return
+	w.dirty = false
 
-@(private = "file")
-watcher_facts :: proc(out: ^[dynamic]Emit) {
-	for it in w.dropped {
-		o: Out
-		begin(&o, "tray")
-		add(&o, "%s", it)
-		if line, ok := str(&o); ok {
-			append(out, Emit{strings.clone(line, context.temp_allocator), .Drop, 0})
-		}
-		delete(it)
+	b := strings.builder_make(context.temp_allocator)
+	strings.write_string(&b, "{\"items\":[")
+	for it, i in w.items {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_quoted_string(&b, it)
 	}
+	strings.write_string(&b, "],\"dropped\":[")
+	for it, i in w.dropped {
+		if i > 0 do strings.write_byte(&b, ',')
+		strings.write_quoted_string(&b, it)
+	}
+	strings.write_string(&b, "]}")
+
+	for e in vm_feed(vm, a, strings.to_string(b)) {
+		append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, src})
+	}
+	for it in w.dropped do delete(it)
 	clear(&w.dropped)
-
-	for it in w.items {
-		o: Out
-		begin(&o, "tray")
-		add(&o, "%s", it)
-		add(&o, "state=registered")
-		if line, ok := str(&o); ok {
-			append(out, Emit{strings.clone(line, context.temp_allocator), .State, 0})
-		}
-	}
 }

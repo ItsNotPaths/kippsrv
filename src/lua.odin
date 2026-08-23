@@ -1,20 +1,20 @@
 // The Lua VM and the fence around it.
 //
-// The fence is a fact, not a rule somebody remembers. A script gets parsed
-// lines and returns lines. It never holds a descriptor, so it cannot stall
-// the loop, and it never joins a line itself, so it cannot forge a fact with
+// A script gets parsed lines and returns fields. It never holds a descriptor
+// and never joins a line, so it cannot reach the system or forge a fact with
 // an embedded tab.
 package kippsrv
 
 import "base:runtime"
 import "core:c"
+import "core:c/libc"
 import "core:encoding/json"
 import "core:fmt"
 import "core:strings"
 import lua "vendor:lua/5.4"
 
-// A fact has a current value and belongs in the store. An event happened and
-// does not. Only the adapter knows which, so only the adapter can say.
+// A fact has a current value and belongs in the store. An event does not.
+// Only the adapter knows which.
 Emit_Kind :: enum {
 	State,
 	Event,
@@ -30,12 +30,56 @@ Emit :: struct {
 Vm :: struct {
 	L:       ^lua.State,
 	emitted: [dynamic]Emit,   // what the running script produced
+	budget:  int,             // instruction slices left in the running call
+	mem:     ^Mem,            // what the script has allocated
+}
+
+// The sandbox does not stop `while true do end`. This does.
+STEPS   :: 10_000     // instructions between hook calls
+SLICES  :: 200        // slices allowed per call, so about 2M instructions
+
+// Nor does the step hook stop `string.rep("x", 1e9)`: one C call, and a count
+// hook only fires between instructions. Refusing an allocation raises an
+// ordinary Lua memory error, which pcall catches.
+MEM_CAP :: 64 << 20
+
+Mem :: struct {
+	used: int,
+}
+
+@(private = "file")
+lua_alloc :: proc "c" (ud: rawptr, ptr: rawptr, osize, nsize: uint) -> rawptr {
+	m := (^Mem)(ud)
+
+	if nsize == 0 {
+		// osize is a size only when ptr is real. For a fresh allocation it
+		// encodes what kind of object Lua wants.
+		if ptr != nil {
+			m.used -= int(osize)
+			libc.free(ptr)
+		}
+		return nil
+	}
+
+	want := m.used + int(nsize) - (ptr != nil ? int(osize) : 0)
+	if want > MEM_CAP do return nil
+
+	p := libc.realloc(ptr, nsize)
+	if p != nil do m.used = want
+	return p
 }
 
 // A loaded adapter, held by reference in the Lua registry. Zero is no
 // adapter: a source can exist without one, and lua_rawgeti would index nil.
 Adapter :: distinct c.int
 NO_ADAPTER :: Adapter(0)
+
+@(private = "file")
+on_step :: proc "c" (L: ^lua.State, ar: ^lua.Debug) {
+	v := vm_of(L)
+	v.budget -= 1
+	if v.budget <= 0 do lua.L_error(L, "script ran too long and was stopped")
+}
 
 @(private = "file")
 vm_of :: proc "contextless" (L: ^lua.State) -> ^Vm {
@@ -48,9 +92,6 @@ cstr :: proc(s: string) -> cstring {
 }
 
 // ------------------------------------------------------------------- api
-//
-// Three calls. ideas.txt puts wweft's script surface at about forty tagged
-// lines. `make tenet-api` fails if this one passes sixty.
 
 @(private = "file")
 build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
@@ -61,10 +102,15 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 	begin(&o, string(lua.L_checkstring(L, 1)))
 	for i in 2 ..= n do add(&o, "%s", string(lua.tostring(L, i)))
 
-	if line, ok := str(&o); ok {
-		v := vm_of(L)
-		append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), kind, 0})
+	v := vm_of(L)
+	line, ok := str(&o)
+	if !ok {
+		// Silently losing a fact leaves an adapter author nothing to go on.
+		fmt.eprintfln("lua: %s over %d bytes, dropped",
+		              string(lua.L_checkstring(L, 1)), MAX_LINE)
+		return 0
 	}
+	append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), kind, 0})
 	return 0
 }
 
@@ -158,8 +204,16 @@ l_json :: proc "c" (L: ^lua.State) -> c.int {
 	return 1
 }
 
+JSON_MAX_DEPTH :: 32
+
+// A payload comes from a compositor or the bus, so its shape is not ours to
+// trust. Without a bound this recurses per level until the C stack goes.
 @(private = "file")
-push_json :: proc(L: ^lua.State, v: json.Value) {
+push_json :: proc(L: ^lua.State, v: json.Value, depth := 0) {
+	if depth > JSON_MAX_DEPTH || lua.checkstack(L, 4) == 0 {
+		lua.pushnil(L)
+		return
+	}
 	switch t in v {
 	case json.Null:    lua.pushnil(L)
 	case json.Integer: lua.pushinteger(L, lua.Integer(t))
@@ -169,13 +223,13 @@ push_json :: proc(L: ^lua.State, v: json.Value) {
 	case json.Array:
 		lua.newtable(L)
 		for item, i in t {
-			push_json(L, item)
+			push_json(L, item, depth + 1)
 			lua.rawseti(L, -2, lua.Integer(i + 1))
 		}
 	case json.Object:
 		lua.newtable(L)
 		for key, item in t {
-			push_json(L, item)
+			push_json(L, item, depth + 1)
 			lua.setfield(L, -2, cstr(key))
 		}
 	case: lua.pushnil(L)
@@ -185,11 +239,16 @@ push_json :: proc(L: ^lua.State, v: json.Value) {
 // ------------------------------------------------------------------- vm
 
 vm_open :: proc() -> (v: ^Vm, ok: bool) {
-	L := lua.L_newstate()
-	if L == nil do return nil, false
+	mem := new(Mem)
+	L := lua.newstate(lua_alloc, mem)
+	if L == nil {
+		free(mem)
+		return nil, false
+	}
 
 	v = new(Vm)
 	v.L = L
+	v.mem = mem
 	v.emitted = make([dynamic]Emit)
 	(^^Vm)(lua.getextraspace(L))^ = v
 
@@ -214,6 +273,8 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 	lua.pushcfunction(L, l_log)
 	lua.setglobal(L, "print")
 
+	lua.sethook(L, on_step, lua.MASKCOUNT, STEPS)
+
 	lua.newtable(L)
 	lua.pushcfunction(L, l_emit);  lua.setfield(L, -2, "emit")
 	lua.pushcfunction(L, l_log);   lua.setfield(L, -2, "log")
@@ -230,6 +291,7 @@ vm_close :: proc(v: ^Vm) {
 	if v == nil do return
 	lua.close(v.L)
 	delete(v.emitted)
+	free(v.mem)
 	free(v)
 }
 
@@ -242,6 +304,7 @@ fail :: proc(v: ^Vm, what: string) -> bool {
 
 // A script returns a table of functions. `feed` is the only one used today.
 vm_load :: proc(v: ^Vm, path: string) -> (a: Adapter, ok: bool) {
+	v.budget = SLICES
 	if lua.L_loadfile(v.L, cstr(path)) != .OK do return 0, fail(v, path)
 	if lua.Status(lua.pcall(v.L, 0, 1, 0)) != .OK do return 0, fail(v, path)
 
@@ -277,6 +340,7 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 		lua.pushlstring(v.L, cstring(raw_data(data)), c.size_t(len(data)))
 		nargs = 1
 	}
+	v.budget = SLICES
 	if lua.Status(lua.pcall(v.L, nargs, 0, 0)) != .OK {
 		fail(v, fn)
 		lua.pop(v.L, 1)
@@ -315,6 +379,7 @@ vm_call :: proc(v: ^Vm, a: Adapter, fn: string) -> []Emit {
 
 // Run a string. Used by the sandbox check, never in normal operation.
 vm_eval :: proc(v: ^Vm, src: string) -> bool {
+	v.budget = SLICES
 	if lua.L_loadstring(v.L, cstr(src)) != .OK do return fail(v, "eval")
 	if lua.Status(lua.pcall(v.L, 0, 0, 0)) != .OK do return fail(v, "eval")
 	return true
