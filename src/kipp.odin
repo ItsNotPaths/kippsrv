@@ -93,6 +93,11 @@ add :: proc(o: ^Out, format: string, args: ..any) {
 	o.len += n
 }
 
+// What has been built so far, valid or not. For a writer checking its own work.
+line_of :: proc(o: ^Out) -> string {
+	return string(o.buf[:o.len])
+}
+
 str :: proc(o: ^Out) -> (string, bool) {
 	if o.over do return "", false
 	return string(o.buf[:o.len]), true

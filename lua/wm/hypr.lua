@@ -11,6 +11,7 @@ local mon = nil          -- focused monitor
 local focused = {}       -- the tag each monitor is on, so the last one clears
 local pending = nil      -- appid/title seen before we knew the monitor
 local seed = {}          -- JSON lines waiting for the end of the batch
+local SEED_MAX = 4096    -- a live socket never flushes, so this cannot grow
 
 local function split2(s)
 	local a, b = s:match("^([^,]*),(.*)$")
@@ -42,7 +43,14 @@ return {
 	feed = function(line)
 		local ev, data = line:match("^([%a%d]+)>>(.*)$")
 		if not ev then
-			seed[#seed + 1] = line   -- not an event, so it is the seed
+			-- Not an event, so it belongs to the seed. A socket never ends,
+			-- so an unrecognised line there would accumulate for the session
+			-- and corrupt the next decode.
+			if #seed >= SEED_MAX then
+				seed = {}
+				k.log("hypr: seed overflowed, discarded")
+			end
+			seed[#seed + 1] = line
 			return
 		end
 

@@ -5,6 +5,11 @@
 # title text in the subject would make every title a separate fact, and the
 # store would keep all of them forever.
 #
+# Use an identifier, never a display name. A UUID, a MAC, a bus name or a
+# connector never holds '=', and a name a person typed can. A '=' in a subject
+# reads as the first attribute, so the fact loses its subject and collides
+# with every other fact of its kind.
+#
 # The subject is the monitor, because a bar draws per monitor. A window
 # manager that identifies things by window instead resolves that in its own
 # adapter, which is the work an adapter exists to do.

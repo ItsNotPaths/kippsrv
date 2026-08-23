@@ -265,14 +265,20 @@ dbus_open :: proc(ss: ^Sources, name: string, system: bool, matches: []string,
 	bus: ^Bus
 	r := system ? bus_default_system(&bus) : bus_default_user(&bus)
 	if r < 0 || bus == nil {
-		fmt.eprintfln("dbus: %s: cannot reach the bus (%d)", name, r)
+		fmt.eprintfln(
+`kippsrv: source %q cannot reach the %s bus (%d), so whatever it reports will
+         be missing. [E-bus] See DIAGNOSTICS.md.`,
+			name, system ? "system" : "session", r)
 		return nil, false
 	}
 
 	for m in matches {
 		cm := strings.clone_to_cstring(m, context.temp_allocator)
 		if e := bus_add_match(bus, nil, cm, nil, nil); e < 0 {
-			fmt.eprintfln("dbus: %s: match %q refused (%d)", name, m, e)
+			fmt.eprintfln(
+`kippsrv: source %q had a D-Bus match rule refused (%d), so some of what it
+         watches will be missing. The rule was %q. [E-bus] See DIAGNOSTICS.md.`,
+				name, e, m)
 		}
 	}
 

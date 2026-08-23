@@ -6,6 +6,10 @@
 # Nothing at runtime consults these files: the daemon has no vocabulary in it,
 # and an unlisted kind reaches a consumer untouched.
 #
+# It matches quoted literals only. A kind built at run time, k.emit(kind_var,
+# ...), is invisible here and to lint-core. The check is partial by
+# construction, and its job is to make the ordinary mistake visible in a diff.
+#
 # lua/<domain>/<impl>.lua may emit only the kinds in vocab/<domain>.txt. A new
 # kind is an edit to that file, which is a deliberate act. A domain with one
 # implementation cannot drift, so the file is documentation. A domain with

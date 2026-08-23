@@ -96,8 +96,11 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 		if len(st.order) >= MAX_FACTS {
 			if !st.full {
 				st.full = true
-				fmt.eprintfln("store: %d facts, refusing more. An adapter is "+
-				              "keying on something unbounded.", MAX_FACTS)
+				fmt.eprintfln(
+`kippsrv: reached %d stored facts and is refusing more, so parts of your
+         desktop will stop updating. An adapter is using something unbounded
+         as a subject. This is a bug in an adapter, not in your configuration.
+         [E-full] See DIAGNOSTICS.md.`, MAX_FACTS)
 			}
 			return ""
 		}

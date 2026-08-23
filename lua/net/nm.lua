@@ -24,13 +24,16 @@ end
 return {
 	feed = function(line)
 		local f = split_esc(line)
-		if #f < 3 or f[1] == "" then return end
+		if #f < 4 or f[1] == "" then return end
 
-		-- The subject is the connection name, which is unique. Keying on the
-		-- device would collapse every inactive connection onto one empty
-		-- device, losing all but the last and rewriting it on every poll.
-		k.emit("net", f[1], "type=" .. f[2],
-		       "device=" .. (f[3] ~= "" and f[3] or ""),
-		       "state=" .. (f[3] ~= "" and "up" or "down"))
+		-- The subject is the UUID. The device is empty for every inactive
+		-- connection, so keying on it collapses them onto one fact. The name
+		-- is unique but a person types it, and a name holding '=' would be
+		-- read as an attribute and lose the subject entirely. A UUID can hold
+		-- neither problem.
+		k.emit("net", f[1],
+		       "name=" .. f[2], "type=" .. f[3],
+		       "device=" .. (f[4] ~= "" and f[4] or ""),
+		       "state=" .. (f[4] ~= "" and "up" or "down"))
 	end,
 }

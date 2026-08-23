@@ -26,18 +26,25 @@ return {
 		-- dwl hands its status to one child, so kippsrv is that child.
 		-- { name = "wm", adapter = "lua/wm/dwl.lua", exec = {"dwl", "-s", "cat"} },
 
-		-- sway and i3 frame their messages with a length prefix.
+		-- sway and i3 frame their messages with a length prefix. NOT YET
+		-- USABLE: lua/wm/i3.lua reads a reply to GET_WORKSPACES, and nothing
+		-- sends that request. It needs the outbound command path, and
+		-- handling for subscribed events, whose type has the high bit set.
 		-- { name = "wm", adapter = "lua/wm/i3.lua", sock = "$SWAYSOCK",
 		--   framing = {kind = "prefix", header = 14, at = 6, width = 4, le = true} },
 
 		{ name = "net", adapter = "lua/net/nm.lua",
-		  exec = {"nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show"},
+		  exec = {"nmcli", "-t", "-f", "UUID,NAME,TYPE,DEVICE", "connection", "show"},
 		  every = 5000 },
 
-		{ name = "audio", adapter = "lua/audio/pw.lua",
+		-- steady: a person drives these. Backing off would mean pressing the
+		-- volume key and waiting up to 32 s for the bar to notice. Both of
+		-- these are polls that should not exist at all: volume is a PipeWire
+		-- subscription, and /sys/class/backlight/*/brightness is watchable.
+		{ name = "audio", adapter = "lua/audio/pw.lua", steady = true,
 		  exec = {"pactl", "list", "short", "sinks"}, every = 2000 },
 
 		{ name = "backlight", adapter = "lua/backlight/brightnessctl.lua",
-		  exec = {"brightnessctl", "-m"}, every = 2000 },
+		  steady = true, exec = {"brightnessctl", "-m"}, every = 2000 },
 	},
 }

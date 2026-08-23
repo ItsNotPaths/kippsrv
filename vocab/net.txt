@@ -1,2 +1,2 @@
 # Network. One line for each connection a daemon reports.
-net         # <connection name> type= device= state=
+net         # <uuid> name= type= device= state=

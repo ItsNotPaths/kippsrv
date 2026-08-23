@@ -1,4 +1,8 @@
--- i3 and sway. A length-prefixed binary frame: a magic string, a
+-- i3 and sway. INCOMPLETE: this reads a reply to GET_WORKSPACES or
+-- GET_OUTPUTS, and nothing sends either request yet. Subscribed events carry
+-- a type with the high bit set and are not handled.
+--
+-- A length-prefixed binary frame: a magic string, a
 -- 32-bit little-endian length, a 32-bit type, then a JSON payload.
 --
 -- The source hands over whole frames. Buffering a partial one is its job,

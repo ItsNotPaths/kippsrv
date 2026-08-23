@@ -32,6 +32,8 @@ Vm :: struct {
 	emitted: [dynamic]Emit,   // what the running script produced
 	budget:  int,             // instruction slices left in the running call
 	mem:     ^Mem,            // what the script has allocated
+	paths:   map[Adapter]string,   // which file each adapter came from
+	running: Adapter,              // whose call we are inside, for diagnostics
 }
 
 // The sandbox does not stop `while true do end`. This does.
@@ -103,11 +105,42 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 	for i in 2 ..= n do add(&o, "%s", string(lua.tostring(L, i)))
 
 	v := vm_of(L)
+
+	// A stored fact needs a subject: that is its identity. A field holding
+	// '=' reads as the first attribute, so a subject that holds one leaves
+	// the fact keyed on its kind alone, colliding with every other fact of
+	// that kind. An event is never stored and needs no subject.
+	if kind != .Event && n >= 2 {
+		m, good := parse(line_of(&o), context.temp_allocator)
+		if good && len(m.subj) == 0 {
+			culprit := ""
+			for i in 2 ..= n {
+				f := string(lua.tostring(L, i))
+				if strings.contains(f, "=") {
+					culprit = f
+					break
+				}
+			}
+			fmt.eprintfln(
+`kippsrv: %s produced an unusable %q fact and it was dropped.
+         Something will be missing from your desktop. This is a bug in that
+         adapter file, not in your configuration. Please report it to whoever
+         maintains it, and quote this message.
+         [E-subject] the field %q holds '=', so it read as an attribute and
+         the fact kept no subject. See DIAGNOSTICS.md.`,
+				v.paths[v.running], m.kind, culprit)
+			return 0
+		}
+	}
+
 	line, ok := str(&o)
 	if !ok {
 		// Silently losing a fact leaves an adapter author nothing to go on.
-		fmt.eprintfln("lua: %s over %d bytes, dropped",
-		              string(lua.L_checkstring(L, 1)), MAX_LINE)
+		fmt.eprintfln(
+`kippsrv: %s produced a %q fact longer than %d bytes and it was dropped. This
+         is a bug in that adapter file, not in your configuration.
+         [E-toolong] See DIAGNOSTICS.md.`,
+			v.paths[v.running], string(lua.L_checkstring(L, 1)), MAX_LINE)
 		return 0
 	}
 	append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), kind, 0})
@@ -250,6 +283,7 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 	v.L = L
 	v.mem = mem
 	v.emitted = make([dynamic]Emit)
+	v.paths = make(map[Adapter]string)
 	(^^Vm)(lua.getextraspace(L))^ = v
 
 	// Only these four. No io, no os, no package, no debug, no coroutine, so
@@ -291,6 +325,8 @@ vm_close :: proc(v: ^Vm) {
 	if v == nil do return
 	lua.close(v.L)
 	delete(v.emitted)
+	for _, p in v.paths do delete(p)
+	delete(v.paths)
 	free(v.mem)
 	free(v)
 }
@@ -313,7 +349,9 @@ vm_load :: proc(v: ^Vm, path: string) -> (a: Adapter, ok: bool) {
 		lua.pop(v.L, 1)
 		return 0, false
 	}
-	return Adapter(lua.L_ref(v.L, lua.REGISTRYINDEX)), true
+	ref := Adapter(lua.L_ref(v.L, lua.REGISTRYINDEX))
+	v.paths[ref] = strings.clone(path)
+	return ref, true
 }
 
 vm_unload :: proc(v: ^Vm, a: Adapter) {
@@ -341,6 +379,7 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 		nargs = 1
 	}
 	v.budget = SLICES
+	v.running = a
 	if lua.Status(lua.pcall(v.L, nargs, 0, 0)) != .OK {
 		fail(v, fn)
 		lua.pop(v.L, 1)

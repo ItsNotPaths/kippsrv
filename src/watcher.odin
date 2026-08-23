@@ -257,7 +257,9 @@ watcher_start :: proc(d: ^Source, name := WATCHER_NAME) -> bool {
 	// One watcher. Its state is one table, so a second would answer the
 	// first bus's calls from the second's list.
 	if w.bus != nil {
-		fmt.eprintfln("watcher: already owning a name, %q refused", name)
+		fmt.eprintfln(
+`kippsrv: already own a watcher name, so %q was refused. Only the first
+         watcher in config.lua starts. [E-name] See DIAGNOSTICS.md.`, name)
 		return false
 	}
 	w.bus = d.bus
@@ -297,7 +299,9 @@ watcher_start :: proc(d: ^Source, name := WATCHER_NAME) -> bool {
 
 	if r := bus_add_object_vtable(d.bus, nil, WATCHER_PATH, WATCHER_IFACE,
 	                              raw_data(vt), nil); r < 0 {
-		fmt.eprintfln("watcher: cannot export the interface (%d)", r)
+		fmt.eprintfln(
+`kippsrv: could not export the watcher interface (%d), so the tray will stay
+         empty. [E-name] See DIAGNOSTICS.md.`, r)
 		return false
 	}
 
@@ -308,8 +312,10 @@ watcher_start :: proc(d: ^Source, name := WATCHER_NAME) -> bool {
 
 	cname := strings.clone_to_cstring(name, context.temp_allocator)
 	if r := bus_request_name(w.bus, cname, 0); r < 0 {
-		fmt.eprintfln("watcher: %s is already owned (%d). Stop the owner first.",
-		              name, r)
+		fmt.eprintfln(
+`kippsrv: %s is already owned by another program, so the tray will stay
+         empty. Stop whatever holds it, then restart kippsrv and any
+         application with a tray icon. [E-name] See DIAGNOSTICS.md.`, name)
 		return false
 	}
 	fmt.eprintfln("watcher: owning %s", name)

@@ -136,3 +136,25 @@ a_greedy_script_is_stopped :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(v.emitted), 1)
 	testing.expect(t, v.mem.used < before + (1 << 20), "the memory came back")
 }
+
+// A subject holding '=' reads as the first attribute, so the fact keeps no
+// subject and keys on its kind alone. That would overwrite every other fact
+// of that kind, so it is refused rather than stored.
+@(test)
+a_subject_holding_equals_is_refused :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+
+	testing.expect(t, vm_eval(v, `k.emit("net", "home=wifi", "type=wifi")`))
+	testing.expect_value(t, len(v.emitted), 0)
+
+	// the same name is fine in an attribute: only the first '=' separates
+	testing.expect(t, vm_eval(v, `k.emit("net", "uuid-1", "name=home=wifi")`))
+	testing.expect_value(t, len(v.emitted), 1)
+	if len(v.emitted) == 1 {
+		m, ok := parse(v.emitted[0].line, context.temp_allocator)
+		testing.expect(t, ok)
+		testing.expect_value(t, len(m.subj), 1)
+		testing.expect_value(t, m.attr["name"], "home=wifi")
+	}
+}

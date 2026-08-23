@@ -56,7 +56,9 @@ main :: proc() {
 
 	srv, sok := serve(cfg.socket, "version\t1\tkippsrv\tproto=1")
 	if !sok {
-		fmt.eprintfln("cannot serve %s", cfg.socket)
+		fmt.eprintfln(
+`kippsrv: cannot serve %s. Either another kippsrv is already running, or the
+         directory does not exist or is not writable.`, cfg.socket)
 		os.exit(1)
 	}
 	defer stop(srv)

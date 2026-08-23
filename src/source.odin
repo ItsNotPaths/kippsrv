@@ -341,8 +341,11 @@ src_fds :: proc(ss: ^Sources, dst: []posix.pollfd) -> int {
 	// to say.
 	if dropped > 0 && !ss.warned {
 		ss.warned = true
-		fmt.eprintfln("sources: %d beyond the poll set of %d are not being read",
-		              dropped, len(dst))
+		fmt.eprintfln(
+`kippsrv: %d sources beyond the poll set of %d are not being read, so whatever
+         they report is missing. Remove sources from config.lua, or merge
+         several polls into one command. [E-sources] See DIAGNOSTICS.md.`,
+			dropped, len(dst))
 	}
 	return n
 }
@@ -396,8 +399,10 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 			n := posix.read(fd, raw_data(chunk[:]), len(chunk))
 			if n > 0 {
 				if len(s.buf) + int(n) > MAX_BUF {
-					fmt.eprintfln("source %s: over %d bytes unframed, dropped",
-					              s.name, MAX_BUF)
+					fmt.eprintfln(
+`kippsrv: source %q sent over %d bytes with no complete unit in them, so they
+         were discarded. Its framing does not match what it produces.
+         [E-framing] See DIAGNOSTICS.md.`, s.name, MAX_BUF)
 					clear(&s.buf)
 				} else {
 					append(&s.buf, ..chunk[:int(n)])
@@ -421,7 +426,10 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 			unit, got := take(s)
 			if !got do break
 			if len(unit) == 0 {
-				fmt.eprintfln("source %s: framing yields nothing, stopped", s.name)
+				fmt.eprintfln(
+`kippsrv: source %q stopped: its framing produced an empty unit, which would
+         repeat for ever. Check the framing block for this source in
+         config.lua. [E-framing] See DIAGNOSTICS.md.`, s.name)
 				s.dead = true
 				break
 			}

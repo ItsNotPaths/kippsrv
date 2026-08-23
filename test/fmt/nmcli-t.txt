@@ -1,3 +1,3 @@
-Smith:802-11-wireless:wlp4s0
-lo:loopback:lo
-Wired connection 1:802-3-ethernet:
+c8119aa9-f0e2-4c90-8a5a-794809f16e36:Smith:802-11-wireless:wlp4s0
+98993db0-d97e-4f81-9cd3-08b41f0ecba9:lo:loopback:lo
+7173c918-f3a4-3716-b76f-0d023c6391ad:Wired connection 1:802-3-ethernet:
