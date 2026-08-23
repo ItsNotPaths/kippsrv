@@ -11,9 +11,8 @@ nothing, and a new source costs it one Lua file.
 
 ## State
 
-Step 4 of 6. A foreign format enters through a source, a Lua adapter converts
-it, the store keeps what is current, and kipp comes out of the socket. A
-consumer connecting at any moment gets the truth.
+Step 5 of 6. `kippsrv config.lua` reads a live machine through as many sources
+as you name, keeps what is current, and publishes it as kipp on one socket.
 
 | | |
 | --- | --- |
@@ -22,10 +21,82 @@ consumer connecting at any moment gets the truth.
 | `src/lua.odin` | the VM, the fence, and a four-call script surface |
 | `src/source.odin` | foreign sources and their framing |
 | `src/store.odin` | current truth: dedup, the dump, the projection |
-| `src/main.odin` | **scaffolding.** A hardcoded desktop so the socket can be tested |
+| `src/dbus.odin` | D-Bus signals, through sd-bus |
+| `src/config.odin` | the configuration file, which is Lua |
+| `src/main.odin` | load the config, serve, run |
 | `lua/wm/example.lua` | a stand-in adapter, until `wm/hypr.lua` exists |
 
-Next: D-Bus, a configuration file, and the outbound command path.
+Next: owning a D-Bus name, and the outbound command path.
+
+## D-Bus
+
+```lua
+{ name = "media", adapter = "lua/media/mpris.lua",
+  dbus = {"type='signal',interface='org.freedesktop.DBus.Properties'"} },
+```
+
+The match rules are the same strings `busctl` and `dbus-monitor` take. A signal
+arrives at the adapter as **the JSON busctl prints**, so one adapter file works
+whether a fact was polled or pushed. `lua/media/mpris.lua` handles both, and
+the only difference is which branch of its `feed` runs.
+
+Getting that right needed the writer to collapse a variant the way busctl
+does. A D-Bus value of type `v` reaches Lua as whatever it holds, so an adapter
+never learns that something arrived wrapped.
+
+**sd-bus, not libdbus.** libdbus is available everywhere and would make
+exporting an interface manual message dispatch, which is the next thing to
+build. sd-bus has `sd_bus_add_object_vtable` instead.
+
+sd-bus has two implementations. basu is the same API without systemd, and it
+is the one to package:
+
+```sh
+make            # libsystemd, for a dev machine that has it
+make static     # basu, fetched at a pinned commit and linked in
+```
+
+`make static` leaves a binary that needs no D-Bus library at run time. That is
+also the only build with no second path waiting to fail somewhere else: what
+you test is what you ship.
+
+basu is pinned in the Makefile, not copied into this repo. 34k lines of
+someone else's C does not belong in the tree, and a pinned commit gives the
+same reproducibility without them. Building it needs meson, ninja and gperf.
+
+The dependency is 15 symbols, listed at the top of `src/dbus.odin`. All 15 are
+in basu, along with the five that owning a name will need. Nothing else in
+kippsrv touches the bus, and a source that polls `busctl` instead needs none of
+it — which is how `lua/media/mpris.lua` worked before this file existed.
+
+Still to do here: owning a bus name. That is what `busctl` cannot do and what
+`org.kde.StatusNotifierWatcher` needs.
+
+## Configuration is Lua
+
+`config.lua` returns a table. It runs in the same fenced VM as an adapter, so
+it cannot read a file or open a socket either, and there is no key that means
+"run this". `$VAR` and `~` are expanded by kippsrv, so nothing in Lua reaches a
+variable it was not handed.
+
+```lua
+return {
+	socket = "$XDG_RUNTIME_DIR/kippsrv.sock",
+	state  = "$XDG_RUNTIME_DIR/kippsrv.state",
+	sources = {
+		{ name = "wm-seed", adapter = "lua/wm/hypr.lua",
+		  exec = {"hyprctl", "monitors", "-j"} },
+		{ name = "wm", adapter = "lua/wm/hypr.lua",
+		  sock = "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock" },
+		{ name = "net", adapter = "lua/net/nm.lua", every = 5000,
+		  exec = {"nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show"} },
+	},
+}
+```
+
+An adapter file is loaded once however many sources name it, so the seed and
+the stream above share one state. A source with `every` runs again on that
+period, which is how a command that ends becomes a poll.
 
 ## The store
 
@@ -129,6 +200,7 @@ matching, which is a page.
 | `net` | 1 | nm |
 | `audio` | 1 | pw |
 | `power` | 1 | upower |
+| `media` | 1 | mpris |
 | `backlight` | 1 | brightnessctl |
 
 **An event stream needs a seed.** socket2 reports what changed, not what is,
@@ -207,8 +279,7 @@ Two things had to change to allow it. `feed` now pushes with `pushlstring`, so
 a frame holding a NUL byte is not cut at the first one. And a source can hand
 over a chunk instead of a line.
 
-`src/main.odin` holds domain nouns today and `tenet-core` does not cover it
-yet. That debt closes when the store lands and the hardcoded state goes.
+`tenet-core` now covers every Odin file. No domain noun is left in the core.
 
 ## The fence
 

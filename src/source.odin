@@ -53,14 +53,16 @@ Source :: struct {
 	adapter: Adapter,
 	framing: Framing,
 	buf:     [dynamic]byte,
-	every:   i64,   // timer period in ms
-	due:     i64,   // timer, next fire on the monotonic clock
-	done:    bool,  // the descriptor reached EOF and flush has run
+	argv:    []string,   // exec, kept so it can be run again
+	every:   i64,        // period in ms. A timer fires, an exec respawns
+	due:     i64,        // next fire on the monotonic clock
+	done:    bool,       // ended, and not coming back
 }
 
 Sources :: struct {
-	vm:   ^Vm,
-	list: [dynamic]^Source,
+	vm:    ^Vm,
+	list:  [dynamic]^Source,
+	buses: [dynamic]^Dbus,
 }
 
 MAX_BUF :: 1 << 20   // a source that never frames must not grow without end
@@ -89,8 +91,9 @@ add :: proc(ss: ^Sources, s: ^Source) -> ^Source {
 }
 
 // Spawn a command and read its stdout.
-src_exec :: proc(ss: ^Sources, name: string, argv: []string,
-                 adapter: Adapter, framing: Framing = Lines{}) -> (^Source, bool) {
+// A command that ends and is run again on a period. `every` of 0 runs it once.
+src_exec :: proc(ss: ^Sources, name: string, argv: []string, adapter: Adapter,
+                 framing: Framing = Lines{}, every: i64 = 0) -> (^Source, bool) {
 	// Built before the fork. Between fork and exec only async-signal-safe
 	// calls are allowed, and an allocator whose lock another thread held at
 	// fork time will never unlock in the child.
@@ -118,10 +121,49 @@ src_exec :: proc(ss: ^Sources, name: string, argv: []string,
 
 	posix.close(fds[1])
 	set_flags(fds[0])
+
+	kept := make([]string, len(argv))
+	for a, i in argv do kept[i] = strings.clone(a)
+
+
 	return add(ss, new_clone(Source{
 		name = strings.clone(name), kind = .Exec, fd = fds[0], pid = pid,
-		adapter = adapter, framing = framing,
+		adapter = adapter, framing = framing, argv = kept, every = every,
 	})), true
+}
+
+// Run an exec source again. Its adapter and its state are untouched, which is
+// what lets a poll build on what the last run learned.
+@(private = "file")
+respawn :: proc(s: ^Source) -> bool {
+	cargv := make([]cstring, len(s.argv) + 1)
+	defer delete(cargv)
+	for a, i in s.argv do cargv[i] = strings.clone_to_cstring(a)
+	defer for cs in cargv[:len(s.argv)] do delete(cs)
+	cargv[len(s.argv)] = nil
+
+	fds: [2]posix.FD
+	if posix.pipe(&fds) != .OK do return false
+
+	pid := posix.fork()
+	if pid < 0 {
+		posix.close(fds[0]); posix.close(fds[1])
+		return false
+	}
+	if pid == 0 {
+		posix.dup2(fds[1], posix.STDOUT_FILENO)
+		posix.close(fds[0])
+		posix.close(fds[1])
+		posix.execvp(cargv[0], raw_data(cargv))
+		posix._exit(127)
+	}
+	posix.close(fds[1])
+	set_flags(fds[0])
+	s.fd = fds[0]
+	s.pid = pid
+	s.done = false
+	clear(&s.buf)
+	return true
 }
 
 // Connect to a unix socket and read it.
@@ -156,9 +198,13 @@ src_timer :: proc(ss: ^Sources, name: string, every_ms: i64,
 }
 
 src_close :: proc(ss: ^Sources) {
+	for d in ss.buses do dbus_close(d)
+	delete(ss.buses)
 	for s in ss.list {
 		if s.fd >= 0 do posix.close(s.fd)
 		if s.pid > 0 do posix.kill(s.pid, .SIGTERM)
+		for a in s.argv do delete(a)
+		delete(s.argv)
 		delete(s.buf)
 		delete(s.name)
 		free(s)
@@ -219,6 +265,11 @@ src_fds :: proc(ss: ^Sources, dst: []posix.pollfd) -> int {
 		dst[n] = {fd = s.fd, events = {.IN}}
 		n += 1
 	}
+	for d in ss.buses {
+		if n == len(dst) do break
+		dst[n] = {fd = d.fd, events = {.IN}}
+		n += 1
+	}
 	return n
 }
 
@@ -226,7 +277,8 @@ src_fds :: proc(ss: ^Sources, dst: []posix.pollfd) -> int {
 src_timeout :: proc(ss: ^Sources, now: i64) -> i32 {
 	best: i64 = -1
 	for s in ss.list {
-		if s.kind != .Timer do continue
+		if s.every == 0 do continue
+		if s.kind == .Exec && !s.done do continue
 		left := max(0, s.due - now)
 		if best < 0 || left < best do best = left
 	}
@@ -244,6 +296,13 @@ emit_into :: proc(out: ^[dynamic]Emit, es: []Emit) {
 // the temp allocator and die with the loop pass.
 src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
+
+	for d in ss.buses {
+		if d.fd == fd {
+			dbus_ready(d, ss.vm, &out)
+			return out[:]
+		}
+	}
 
 	for s in ss.list {
 		if s.fd != fd || s.done do continue
@@ -295,22 +354,30 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 				clear(&s.buf)
 			}
 			emit_into(&out, vm_flush(ss.vm, s.adapter))
-			s.done = true
 			posix.close(s.fd)
 			s.fd = -1
+			s.done = true
+			if s.every > 0 do s.due = now_ms() + s.every   // it comes back
 		}
 		break
 	}
 	return out[:]
 }
 
-// Run every timer that is due.
+// Run every timer that is due, and start every exec source whose period came
+// round again.
 src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {
-		if s.kind != .Timer || now < s.due do continue
-		s.due = now + s.every
-		emit_into(&out, vm_call(ss.vm, s.adapter, "tick"))
+		if now < s.due do continue
+
+		switch {
+		case s.kind == .Timer:
+			s.due = now + s.every
+			emit_into(&out, vm_call(ss.vm, s.adapter, "tick"))
+		case s.kind == .Exec && s.done && s.every > 0:
+			if !respawn(s) do s.due = now + s.every
+		}
 	}
 	return out[:]
 }
