@@ -19,7 +19,7 @@ all. Its key becomes the bare kind, and it would overwrite every other fact of
 that kind.
 
 Use a subject that cannot hold `=`: a UUID, a MAC, a bus name, a device path.
-Move the readable name to an attribute, where `=` is legal — only the first one
+Move the readable name to an attribute, where `=` is legal. Only the first one
 separates a key from its value, so `name=home=wifi` is fine.
 
 ```lua
