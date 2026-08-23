@@ -76,17 +76,21 @@ is the one thing `busctl` cannot do for us. A tray application looks for that
 name once, at its own startup, so if nobody owns it no icon ever registers.
 
 ```lua
-{ name = "watcher", watcher = true },
-{ name = "watcher", watcher = true, bus_name = "org.kippsrv.Test" },  -- beside a live one
+{ name = "tray", watcher = true, adapter = "lua/tray/snw.lua" },
 ```
 
-It exports two methods, three properties and three signals, tracks what is
-registered, and drops an entry when its application leaves the bus. Registered
-items leave as `tray` facts like everything else.
+Its state is one table, so there is one watcher. `bus_name` owns a different
+name, for testing beside a live one, and a second `watcher = true` is refused
+with a message.
 
-The core learns "StatusNotifierItem" here, and that is allowed. It is the name
-of a protocol we speak, like D-Bus itself or kipp. It is not a noun of the
-desktop: nothing in the core knows what a tray is for or how one is drawn.
+It exports two methods, three properties and three signals, tracks what is
+registered, and drops an entry when its application leaves the bus.
+
+**The kind is named in Lua, not here.** The registrations reach
+`lua/tray/snw.lua` as a JSON line, the same shape a D-Bus source gets, and it
+decides they are `tray` facts. The core knows "items" and "dropped", which are
+facts about a D-Bus interface, and no noun of the desktop — so `lint-core`
+covers this file like every other.
 
 **The vtable struct differs between the two sd-bus implementations.**
 libsystemd is 56 bytes and carries parameter names and a format reference.
@@ -253,6 +257,15 @@ window manager is one file, however many sources it takes to read it.
 
 kippsrv holds no routes. It names sources, never consumers. A configuration
 that wired a source to a bar would make a second bar an edit to kippsrv.
+
+## When something goes wrong
+
+Every message carrying a code in brackets is explained in
+[DIAGNOSTICS.md](DIAGNOSTICS.md), and each one says who can fix it. A message
+that names an adapter file is a bug in that adapter, not in your
+configuration — the file it names is the one to report against.
+
+Anything starting `config:` is yours to correct, and names the key it expected.
 
 ## Sources
 
