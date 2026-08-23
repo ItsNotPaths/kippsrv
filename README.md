@@ -69,8 +69,30 @@ in basu, along with the five that owning a name will need. Nothing else in
 kippsrv touches the bus, and a source that polls `busctl` instead needs none of
 it — which is how `lua/media/mpris.lua` worked before this file existed.
 
-Still to do here: owning a bus name. That is what `busctl` cannot do and what
-`org.kde.StatusNotifierWatcher` needs.
+## The watcher
+
+`src/watcher.odin` owns `org.kde.StatusNotifierWatcher` and answers on it. That
+is the one thing `busctl` cannot do for us. A tray application looks for that
+name once, at its own startup, so if nobody owns it no icon ever registers.
+
+```lua
+{ name = "watcher", watcher = true },
+{ name = "watcher", watcher = true, bus_name = "org.kippsrv.Test" },  -- beside a live one
+```
+
+It exports two methods, three properties and three signals, tracks what is
+registered, and drops an entry when its application leaves the bus. Registered
+items leave as `tray` facts like everything else.
+
+The core learns "StatusNotifierItem" here, and that is allowed. It is the name
+of a protocol we speak, like D-Bus itself or kipp. It is not a noun of the
+desktop: nothing in the core knows what a tray is for or how one is drawn.
+
+**The vtable struct differs between the two sd-bus implementations.**
+libsystemd is 56 bytes and carries parameter names and a format reference.
+basu is 48 and does not. `sd_bus_add_object_vtable` rejects a mismatch at run
+time rather than compile time, so the layout follows the same `when` switch as
+the library.
 
 ## Configuration is Lua
 

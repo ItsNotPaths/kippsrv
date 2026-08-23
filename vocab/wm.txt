@@ -1,14 +1,18 @@
 # Kinds a window manager adapter may emit. A new one is a deliberate edit
 # here, not a thing that appears because one adapter drifted from another.
 #
+# A subject identifies the fact. A value goes in an attribute. Putting the
+# title text in the subject would make every title a separate fact, and the
+# store would keep all of them forever.
+#
 # The subject is the monitor, because a bar draws per monitor. A window
 # manager that identifies things by window instead resolves that in its own
 # adapter, which is the work an adapter exists to do.
 focus       # <monitor>                       the focused monitor
 tag         # <monitor> <n> state=...         one line per non-empty tag
 layout      # <monitor> <name>
-title       # <monitor> <text>                what to show for that monitor
-app         # <monitor> <appid>
+title       # <monitor> text=              what to show for that monitor
+app         # <monitor> id=                the focused application
 mode        # <name>
 win_open    # <id> mon= tag= appid=           event
 win_close   # <id>                            event

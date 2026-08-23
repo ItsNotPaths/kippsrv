@@ -8,6 +8,7 @@
 // works whether a fact arrives by poll or by signal.
 package kippsrv
 
+import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:strconv"
@@ -56,7 +57,34 @@ foreign sdbus {
 	bus_message_read_basic      :: proc(m: ^BMsg, type: u8, p: rawptr) -> c.int ---
 	bus_message_enter_container :: proc(m: ^BMsg, type: u8, contents: cstring) -> c.int ---
 	bus_message_exit_container  :: proc(m: ^BMsg) -> c.int ---
+
+	// Owning a name and answering on it.
+	bus_request_name            :: proc(bus: ^Bus, name: cstring, flags: u64) -> c.int ---
+	bus_add_object_vtable       :: proc(bus: ^Bus, slot: rawptr, path, iface: cstring, vt: rawptr, user: rawptr) -> c.int ---
+	// sd_bus_reply_method_return and sd_bus_emit_signal are varargs in C.
+	// Calling a varargs function through a non-varargs declaration leaves
+	// %al unset on x86-64, which is undefined and crashes. Build the reply
+	// message instead: these two are not varargs.
+	bus_message_new_method_return :: proc(call: ^BMsg, m: ^^BMsg) -> c.int ---
+	bus_message_rewind            :: proc(m: ^BMsg, complete: b32) -> c.int ---
+	bus_message_new_signal      :: proc(bus: ^Bus, m: ^^BMsg, path, iface, member: cstring) -> c.int ---
+	bus_message_append_basic    :: proc(m: ^BMsg, type: u8, p: rawptr) -> c.int ---
+	bus_message_open_container  :: proc(m: ^BMsg, type: u8, contents: cstring) -> c.int ---
+	bus_message_close_container :: proc(m: ^BMsg) -> c.int ---
+	bus_send                    :: proc(bus: ^Bus, m: ^BMsg, cookie: ^u64) -> c.int ---
 }
+
+// libsystemd checks that a vtable was built against its own header by
+// pointing at this. basu has no such check, and no such symbol.
+when !#config(BASU, false) {
+	@(default_calling_convention = "c")
+	foreign sdbus {
+		sd_bus_object_vtable_format: u32
+	}
+}
+
+// A C callback has no Odin context. One is kept here for them to adopt.
+odin_ctx: runtime.Context
 
 // ---------------------------------------------------------------- writing
 
@@ -223,7 +251,6 @@ w_message :: proc(m: ^BMsg, allocator := context.allocator) -> string {
 	return strings.to_string(b)
 }
 
-@(private = "file")
 str_or :: proc(s: cstring) -> string {
 	return s == nil ? "" : string(s)
 }
@@ -255,6 +282,8 @@ dbus_open :: proc(name: string, system: bool, matches: []string,
 		}
 	}
 
+	odin_ctx = context
+
 	d := new(Dbus)
 	d.bus = bus
 	d.fd = posix.FD(bus_get_fd(bus))
@@ -283,9 +312,14 @@ dbus_ready :: proc(d: ^Dbus, vm: ^Vm, out: ^[dynamic]Emit) {
 		if m == nil do continue
 		defer bus_message_unref(m)
 
+		// The watcher tracks who is still on the bus. Reading a message
+		// consumes it, so it is rewound before the adapter sees it.
+		watcher_notice(m)
+		bus_message_rewind(m, true)
+
 		line := w_message(m, context.temp_allocator)
 		for e in vm_feed(vm, d.adapter, line) {
-			append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind})
+			append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, 0})
 		}
 	}
 }

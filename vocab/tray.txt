@@ -1,0 +1,2 @@
+# Tray icons, as org.kde.StatusNotifierWatcher reports them.
+tray        # <service/path> state=

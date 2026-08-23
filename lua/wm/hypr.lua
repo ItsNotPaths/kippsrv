@@ -22,8 +22,8 @@ local function show(appid, text)
 		pending = {appid, text}
 		return
 	end
-	if appid and appid ~= "" then k.emit("app", mon, appid) end
-	if text then k.emit("title", mon, text) end
+	if appid and appid ~= "" then k.emit("app", mon, "id=" .. appid) end
+	if text then k.emit("title", mon, "text=" .. text) end
 end
 
 return {

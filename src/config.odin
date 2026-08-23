@@ -25,6 +25,8 @@ Src_Spec :: struct {
 	dbus:    []string,   // match rules, or
 	system:  bool,       // the system bus instead of the session bus
 	timer:   bool,       // a bare heartbeat
+	watcher: bool,       // own the StatusNotifierWatcher name on this bus
+	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
 	framing: Framing,
 }
@@ -166,10 +168,12 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 		s.dbus = field_list(L, "dbus")
 		s.system = field_bool(L, "system")
 		s.timer = field_bool(L, "timer")
+		s.watcher = field_bool(L, "watcher")
+		s.bus_name, _ = field_str(L, "bus_name")
 		s.every = field_int(L, "every")
 		s.framing = field_framing(L)
 
-		if s.adapter == "" {
+		if s.adapter == "" && !s.watcher {
 			fmt.eprintfln("config: source %d has no adapter, skipped", i)
 			continue
 		}
@@ -183,7 +187,7 @@ config_free :: proc(cfg: ^Config) {
 	delete(cfg.socket)
 	delete(cfg.state)
 	for s in cfg.sources {
-		delete(s.name); delete(s.adapter); delete(s.sock)
+		delete(s.name); delete(s.adapter); delete(s.sock); delete(s.bus_name)
 		for a in s.exec do delete(a)
 		delete(s.exec)
 		for a in s.dbus do delete(a)
@@ -199,7 +203,9 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 	started := 0
 
 	for spec in cfg.sources {
-		a, seen := loaded[spec.adapter]
+		a: Adapter
+		seen := true
+		if spec.adapter != "" do a, seen = loaded[spec.adapter]
 		if !seen {
 			ok: bool
 			a, ok = vm_load(v, spec.adapter)
@@ -217,10 +223,16 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			_, ok = src_exec(ss, spec.name, spec.exec, a, spec.framing, spec.every)
 		case spec.sock != "":
 			_, ok = src_sock(ss, spec.name, spec.sock, a, spec.framing)
-		case len(spec.dbus) > 0:
+		case len(spec.dbus) > 0 || spec.watcher:
 			d: ^Dbus
 			d, ok = dbus_open(spec.name, spec.system, spec.dbus, a)
-			if ok do append(&ss.buses, d)
+			if ok {
+				append(&ss.buses, d)
+				if spec.watcher {
+					ok = watcher_start(d, spec.bus_name != "" \
+						? spec.bus_name : WATCHER_NAME)
+				}
+			}
 		case spec.timer:
 			_, ok = src_timer(ss, spec.name, spec.every, a)
 		case:

@@ -46,6 +46,7 @@ Kind :: enum {
 }
 
 Source :: struct {
+	id:      int,
 	name:    string,
 	kind:    Kind,
 	fd:      posix.FD,
@@ -56,13 +57,17 @@ Source :: struct {
 	argv:    []string,   // exec, kept so it can be run again
 	every:   i64,        // period in ms. A timer fires, an exec respawns
 	due:     i64,        // next fire on the monotonic clock
-	done:    bool,       // ended, and not coming back
+	done:    bool,       // ended for now
+	fails:   int,        // respawns in a row that did not start
+	dead:    bool,       // gone for good. Its facts are stale
+	reaped:  bool,       // the store has been told
 }
 
 Sources :: struct {
-	vm:    ^Vm,
-	list:  [dynamic]^Source,
-	buses: [dynamic]^Dbus,
+	vm:     ^Vm,
+	list:   [dynamic]^Source,
+	buses:  [dynamic]^Dbus,
+	next_id: int,
 }
 
 MAX_BUF :: 1 << 20   // a source that never frames must not grow without end
@@ -86,6 +91,8 @@ set_flags :: proc(fd: posix.FD) {
 @(private = "file")
 add :: proc(ss: ^Sources, s: ^Source) -> ^Source {
 	s.buf = make([dynamic]byte)
+	ss.next_id += 1
+	s.id = ss.next_id
 	append(&ss.list, s)
 	return s
 }
@@ -286,9 +293,9 @@ src_timeout :: proc(ss: ^Sources, now: i64) -> i32 {
 }
 
 @(private = "file")
-emit_into :: proc(out: ^[dynamic]Emit, es: []Emit) {
+emit_into :: proc(out: ^[dynamic]Emit, es: []Emit, src: int) {
 	for e in es {
-		append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind})
+		append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, src})
 	}
 }
 
@@ -340,9 +347,9 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 			unit, got := take(s)
 			if !got do break
 			if _, is_lines := s.framing.(Lines); is_lines {
-				emit_into(&out, vm_feed(ss.vm, s.adapter, string(unit)))
+				emit_into(&out, vm_feed(ss.vm, s.adapter, string(unit)), s.id)
 			} else {
-				emit_into(&out, vm_feed_bytes(ss.vm, s.adapter, unit))
+				emit_into(&out, vm_feed_bytes(ss.vm, s.adapter, unit), s.id)
 			}
 			consumed(s, unit)
 		}
@@ -350,14 +357,21 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 		if eof {
 			// A last line with no trailing newline is still a line.
 			if _, is_lines := s.framing.(Lines); is_lines && len(s.buf) > 0 {
-				emit_into(&out, vm_feed(ss.vm, s.adapter, string(s.buf[:])))
+				emit_into(&out, vm_feed(ss.vm, s.adapter, string(s.buf[:])), s.id)
 				clear(&s.buf)
 			}
-			emit_into(&out, vm_flush(ss.vm, s.adapter))
+			emit_into(&out, vm_flush(ss.vm, s.adapter), s.id)
 			posix.close(s.fd)
 			s.fd = -1
 			s.done = true
-			if s.every > 0 do s.due = now_ms() + s.every   // it comes back
+
+			// A poll ends every cycle by design, and a one-shot seed ends
+			// once and stays true. Neither is a death. A socket closing is.
+			if s.kind == .Sock {
+				s.dead = true
+			} else if s.every > 0 {
+				s.due = now_ms() + s.every
+			}
 		}
 		break
 	}
@@ -366,6 +380,18 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 
 // Run every timer that is due, and start every exec source whose period came
 // round again.
+// Sources that died since the last pass, so the store can mark their facts.
+src_reap :: proc(ss: ^Sources) -> []int {
+	out := make([dynamic]int, context.temp_allocator)
+	for s in ss.list {
+		if s.dead && !s.reaped {
+			s.reaped = true
+			append(&out, s.id)
+		}
+	}
+	return out[:]
+}
+
 src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {
@@ -374,9 +400,16 @@ src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 		switch {
 		case s.kind == .Timer:
 			s.due = now + s.every
-			emit_into(&out, vm_call(ss.vm, s.adapter, "tick"))
-		case s.kind == .Exec && s.done && s.every > 0:
-			if !respawn(s) do s.due = now + s.every
+			emit_into(&out, vm_call(ss.vm, s.adapter, "tick"), s.id)
+		case s.kind == .Exec && s.done && s.every > 0 && !s.dead:
+			if respawn(s) {
+				s.fails = 0
+			} else {
+				s.fails += 1
+				s.due = now + s.every
+				// Three in a row means it is not coming back.
+				if s.fails >= 3 do s.dead = true
+			}
 		}
 	}
 	return out[:]

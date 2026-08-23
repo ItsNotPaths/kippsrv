@@ -82,6 +82,39 @@ else
 	echo "skip  dbus (no busctl or no session bus)"
 fi
 
+# The watcher owns a test name, never the real one. Taking
+# org.kde.StatusNotifierWatcher stops whatever holds it, which is not a thing
+# a test does.
+if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+	WSOCK=/tmp/kippsrv-w.$$.sock
+	WCONF=/tmp/kippsrv-w.$$.lua
+	WNAME=org.kippsrv.CheckWatcher.p$$
+	cat > "$WCONF" <<WCONFEOF
+return {
+	socket = "$WSOCK",
+	sources = { { name = "watcher", watcher = true, bus_name = "$WNAME" } },
+}
+WCONFEOF
+	./kippsrv "$WCONF" 2>/dev/null &
+	WSRV=$!
+	sleep 0.4
+	busctl --user call "$WNAME" /StatusNotifierWatcher \
+		org.kde.StatusNotifierWatcher RegisterStatusNotifierItem s org.test.Item \
+		>/dev/null 2>&1
+	got=$(busctl --user get-property "$WNAME" /StatusNotifierWatcher \
+		org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null)
+	if printf '%s' "$got" | grep -q 'org.test.Item'; then
+		echo "ok    watcher owns a name and registers an item"
+	else
+		echo "FAIL  watcher did not register ($got)"
+		FAILS=$((FAILS + 1))
+	fi
+	kill "$WSRV" 2>/dev/null
+	rm -f "$WSOCK" "$WCONF"
+else
+	echo "skip  watcher (no busctl or no session bus)"
+fi
+
 if [ -s "$SOCK.state" ]; then
 	echo "ok    projection written"
 else

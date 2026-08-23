@@ -24,6 +24,7 @@ Emit_Kind :: enum {
 Emit :: struct {
 	line: string,
 	kind: Emit_Kind,
+	src:  int,      // which source produced it. 0 is none
 }
 
 Vm :: struct {
@@ -31,8 +32,10 @@ Vm :: struct {
 	emitted: [dynamic]Emit,   // what the running script produced
 }
 
-// A loaded adapter, held by reference in the Lua registry.
+// A loaded adapter, held by reference in the Lua registry. Zero is no
+// adapter: a source can exist without one, and lua_rawgeti would index nil.
 Adapter :: distinct c.int
+NO_ADAPTER :: Adapter(0)
 
 @(private = "file")
 vm_of :: proc "contextless" (L: ^lua.State) -> ^Vm {
@@ -60,7 +63,7 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 
 	if line, ok := str(&o); ok {
 		v := vm_of(L)
-		append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), kind})
+		append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), kind, 0})
 	}
 	return 0
 }
@@ -259,6 +262,7 @@ vm_unload :: proc(v: ^Vm, a: Adapter) {
 @(private = "file")
 call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 	clear(&v.emitted)
+	if a == NO_ADAPTER do return nil
 
 	lua.rawgeti(v.L, lua.REGISTRYINDEX, lua.Integer(a))
 	if lua.getfield(v.L, -1, cstr(fn)) != c.int(lua.TFUNCTION) {

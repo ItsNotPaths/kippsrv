@@ -1,7 +1,10 @@
 package kippsrv
 
+PR_SET_DUMPABLE :: 4
+
 import "core:fmt"
 import "core:os"
+import "core:sys/linux"
 import "core:sys/posix"
 
 // The dump is the store, in the order facts were first seen.
@@ -20,6 +23,12 @@ command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 }
 
 main :: proc() {
+	// A crash would otherwise write every window title and SSID we hold into
+	// a core file that outlives the session. This is per-process: it does
+	// not touch the system setting, and a command we spawn gets its own
+	// dumpable flag back at exec.
+	linux.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
+
 	v, vok := vm_open()
 	if !vok {
 		fmt.eprintln("cannot start the Lua VM")

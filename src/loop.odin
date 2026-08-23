@@ -45,6 +45,10 @@ run :: proc(l: ^Loop) {
 			}
 		}
 		publish(l, src_tick(l.src, now_ms()))
+		for id in src_reap(l.src) {
+			for line in store_stale(l.store, id) do broadcast(l.srv, line)
+		}
+		publish(l, watcher_pass())
 		store_project(l.store)
 		srv_flush(l.srv)
 

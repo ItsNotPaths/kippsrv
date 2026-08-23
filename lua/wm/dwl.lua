@@ -14,10 +14,10 @@ return {
 		if not mon then return end
 
 		if kind == "title" then
-			k.emit("title", mon, data)
+			k.emit("title", mon, "text=" .. data)
 
 		elseif kind == "appid" then
-			k.emit("app", mon, data)
+			k.emit("app", mon, "id=" .. data)
 
 		elseif kind == "tags" then
 			local occ, sel, urg = data:match("^(%d+)%s+(%d+)%s+(%d+)")
