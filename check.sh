@@ -45,8 +45,47 @@ want late       'focus	0'                     ''
 want sync       '^sync	state$'                ''
 want no_forgery 'error	badcmd	cmd=tag'       'tag	0	9	state=focused
 '
-want no_command 'no adapter takes commands'    'TAG	9
+want no_command 'error	badcmd	cmd=TAG'       'TAG	9
 '
+
+# The outbound seam. An adapter turns a command into bytes its own source
+# understands, and the core writes them to the channel that source names.
+FIFO=/tmp/kippsrv-cmd.$$.fifo
+CSOCK=/tmp/kippsrv-cmd.$$.sock
+CCONF=/tmp/kippsrv-cmd.$$.lua
+mkfifo "$FIFO"
+cat > "$CCONF" <<CCONFEOF
+return {
+	socket = "$CSOCK",
+	sources = {
+		{ name = "wm", adapter = "lua/wm/hedl.lua",
+		  exec = {"true"}, cmd = "$FIFO" },
+	},
+}
+CCONFEOF
+# A reader, so the FIFO can be opened for writing at all.
+timeout 4 cat "$FIFO" > "$FIFO.out" &
+./kippsrv "$CCONF" 2>/dev/null &
+CSRV=$!
+sleep 0.4
+printf 'VIEW\t2\nVIEW\t99\n' | timeout 2 socat -t1 - UNIX-CONNECT:"$CSOCK" \
+	> "$FIFO.err" 2>/dev/null
+sleep 0.5
+
+if grep -q "$(printf 'view\t2')" "$FIFO.out" 2>/dev/null; then
+	echo "ok    a command reaches the channel its source names"
+else
+	echo "FAIL  the command did not reach the channel"
+	FAILS=$((FAILS + 1))
+fi
+if grep -q 'error	badarg	cmd=VIEW' "$FIFO.err" 2>/dev/null; then
+	echo "ok    an adapter refuses its own verb with badarg"
+else
+	echo "FAIL  a refused command gave no badarg"
+	FAILS=$((FAILS + 1))
+fi
+kill "$CSRV" 2>/dev/null
+rm -f "$FIFO" "$FIFO.out" "$FIFO.err" "$CSOCK" "$CCONF"
 
 # D-Bus needs a live session bus and busctl. Missing either is a skip.
 if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then

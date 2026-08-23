@@ -158,3 +158,50 @@ a_subject_holding_equals_is_refused :: proc(t: ^testing.T) {
 		testing.expect_value(t, m.attr["name"], "home=wifi")
 	}
 }
+
+// The outbound seam, with no source attached. An adapter answers in the terms
+// its own source understands, and the core never learns what VIEW means.
+@(test)
+command_translates_for_its_own_source :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+	a, ok := vm_load(v, "lua/wm/hedl.lua")
+	if !testing.expect(t, ok, "vm_load") do return
+
+	view, _ := parse("VIEW\t2", context.temp_allocator)
+	bytes, is_bytes := vm_command(v, a, &view).(Cmd_Bytes)
+	testing.expect(t, is_bytes, "VIEW answers with bytes")
+	testing.expect_value(t, bytes.data, "view\t2\n")
+
+	over, _ := parse("VIEW\t99", context.temp_allocator)
+	bad, is_bad := vm_command(v, a, &over).(Cmd_Fail)
+	testing.expect(t, is_bad, "a tag out of range is refused")
+	testing.expect_value(t, bad.code, "badarg")
+
+	// Another adapter's verb. Nothing at all, so the next source is asked.
+	theirs, _ := parse("ACTIVATE\t:1.42/StatusNotifierItem", context.temp_allocator)
+	testing.expect(t, vm_command(v, a, &theirs) == nil, "not its command")
+}
+
+// The tray is the case that cannot be done any other way: the connection the
+// item registered on belongs to this process.
+@(test)
+command_describes_a_call :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+	a, ok := vm_load(v, "lua/tray/snw.lua")
+	if !testing.expect(t, ok, "vm_load") do return
+
+	m, _ := parse("ACTIVATE\t:1.42/StatusNotifierItem\tx=10\ty=20",
+	              context.temp_allocator)
+	call, is_call := vm_command(v, a, &m).(Cmd_Call)
+	if !testing.expect(t, is_call, "ACTIVATE answers with a call") do return
+
+	testing.expect_value(t, call.dest, ":1.42")
+	testing.expect_value(t, call.path, "/StatusNotifierItem")
+	testing.expect_value(t, call.member, "Activate")
+	testing.expect_value(t, call.sig, "ii")
+	testing.expect_value(t, len(call.args), 2)
+	testing.expect_value(t, call.args[0], "10")
+	testing.expect_value(t, call.args[1], "20")
+}

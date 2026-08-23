@@ -88,7 +88,7 @@ vm_of :: proc "contextless" (L: ^lua.State) -> ^Vm {
 	return (^^Vm)(lua.getextraspace(L))^
 }
 
-@(private = "file")
+// Temp-allocated, so it dies with the loop pass like everything else.
 cstr :: proc(s: string) -> cstring {
 	return strings.clone_to_cstring(s, context.temp_allocator)
 }
@@ -181,18 +181,10 @@ l_log :: proc "c" (L: ^lua.State) -> c.int {
 	return 0
 }
 
-// @api k.parse(line) -> {kind, subj, attr} | nil
+// One parsed line as a table. `k.parse` returns this, and a command arrives
+// as it, so an adapter reads both the same way.
 @(private = "file")
-l_parse :: proc "c" (L: ^lua.State) -> c.int {
-	context = runtime.default_context()
-
-	n: c.size_t
-	cs := lua.L_checkstring(L, 1, &n)
-	m, ok := parse(string(([^]byte)(cs)[:n]), context.temp_allocator)
-	if !ok {
-		lua.pushnil(L)
-		return 1
-	}
+push_msg :: proc(L: ^lua.State, m: ^Msg) {
 	lua.newtable(L)
 
 	lua.pushstring(L, cstr(m.kind))
@@ -211,6 +203,21 @@ l_parse :: proc "c" (L: ^lua.State) -> c.int {
 		lua.setfield(L, -2, cstr(key))
 	}
 	lua.setfield(L, -2, "attr")
+}
+
+// @api k.parse(line) -> {kind, subj, attr} | nil
+@(private = "file")
+l_parse :: proc "c" (L: ^lua.State) -> c.int {
+	context = runtime.default_context()
+
+	n: c.size_t
+	cs := lua.L_checkstring(L, 1, &n)
+	m, ok := parse(string(([^]byte)(cs)[:n]), context.temp_allocator)
+	if !ok {
+		lua.pushnil(L)
+		return 1
+	}
+	push_msg(L, &m)
 	return 1
 }
 
@@ -414,6 +421,101 @@ vm_flush :: proc(v: ^Vm, a: Adapter) -> []Emit {
 // timer source calls.
 vm_call :: proc(v: ^Vm, a: Adapter, fn: string) -> []Emit {
 	return call(v, a, fn, nil)
+}
+
+// ------------------------------------------------------------- commands
+
+@(private = "file")
+str_at :: proc(L: ^lua.State, i: c.int) -> string {
+	n: c.size_t
+	cs := lua.tolstring(L, i, &n)
+	if cs == nil do return ""
+	return strings.clone(string(([^]byte)(cs)[:n]), context.temp_allocator)
+}
+
+@(private = "file")
+field_at :: proc(L: ^lua.State, at: c.int, key: cstring) -> string {
+	defer lua.pop(L, 1)
+	if lua.getfield(L, at, key) != c.int(lua.TSTRING) do return ""
+	return str_at(L, -1)
+}
+
+// Read a call the adapter described. Every argument crosses as text, and the
+// signature says what each one is, because D-Bus is typed and Lua is not.
+@(private = "file")
+read_call :: proc(L: ^lua.State, at: c.int) -> Cmd_Call {
+	out := Cmd_Call{
+		dest   = field_at(L, at, "dest"),
+		path   = field_at(L, at, "path"),
+		iface  = field_at(L, at, "iface"),
+		member = field_at(L, at, "member"),
+		sig    = field_at(L, at, "sig"),
+	}
+
+	args := make([dynamic]string, context.temp_allocator)
+	defer lua.pop(L, 1)
+	if lua.getfield(L, at, "args") == c.int(lua.TTABLE) {
+		for i in 1 ..= int(lua.rawlen(L, -1)) {
+			lua.rawgeti(L, -1, lua.Integer(i))
+			append(&args, str_at(L, -1))
+			lua.pop(L, 1)
+		}
+	}
+	out.args = args[:]
+	return out
+}
+
+// Offer one command to one adapter. It answers with bytes for its own source,
+// a call on its own bus, a refusal, or nothing, which means the command was
+// not its.
+//
+// The fence holds. The script names a call and never makes one, and the
+// descriptor the answer travels down is never in its reach.
+vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg) -> Cmd {
+	if a == NO_ADAPTER do return nil
+	clear(&v.emitted)
+
+	lua.rawgeti(v.L, lua.REGISTRYINDEX, lua.Integer(a))
+	if lua.getfield(v.L, -1, "command") != c.int(lua.TFUNCTION) {
+		lua.pop(v.L, 2)
+		return nil          // an adapter need not take commands
+	}
+	push_msg(v.L, m)
+
+	v.budget = SLICES
+	v.running = a
+	if lua.Status(lua.pcall(v.L, 1, 3, 0)) != .OK {
+		fail(v, "command")
+		lua.pop(v.L, 1)
+		return nil
+	}
+	defer lua.pop(v.L, 4)   // three results and the adapter table
+
+	// A command produces no facts. The state that follows the action shows
+	// what it did, which is the rule in kipp's SPEC.md, and an adapter that
+	// emits here would be guessing at it.
+	if len(v.emitted) > 0 {
+		fmt.eprintfln(
+`kippsrv: %s emitted %d facts while taking the %q command, and they were
+         dropped. This is a bug in that adapter file.
+         [E-cmdemit] See DIAGNOSTICS.md.`, v.paths[a], len(v.emitted), m.kind)
+		clear(&v.emitted)
+	}
+
+	top := lua.gettop(v.L)
+	#partial switch lua.type(v.L, top - 2) {
+	case .STRING:
+		return Cmd_Bytes{str_at(v.L, top - 2)}
+	case .TABLE:
+		return read_call(v.L, top - 2)
+	}
+
+	// Nothing, and a reason: the verb was this adapter's and something about
+	// the command was not right.
+	if lua.type(v.L, top - 1) == .STRING {
+		return Cmd_Fail{str_at(v.L, top - 1), str_at(v.L, top)}
+	}
+	return nil
 }
 
 // Run a string. Used by the sandbox check, never in normal operation.

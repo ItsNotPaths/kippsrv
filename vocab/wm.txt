@@ -21,3 +21,26 @@ app         # <monitor> id=                the focused application
 mode        # <name>
 win_open    # <id> mon= tag= appid=           event
 win_close   # <id>                            event
+
+# Commands a window manager adapter takes. Uppercase, per SPEC.md. These are
+# convention: vocab.sh checks the kinds an adapter emits, not the verbs it
+# claims. lint-core still forbids the core naming any of them.
+#
+# A bar that drives one window manager should drive the next one, which is the
+# whole reason the list is here and not in each adapter's head.
+VIEW        # <tag>      show that tag
+TAG         # <tag>      move the focused window to it
+TOGGLEVIEW  # <tag>
+TOGGLETAG   # <tag>
+LAYOUT      # <name>
+FOCUS       # <n>        n places along the stack
+MONITOR     # <n>
+MOVE        # <n>        the focused window, to the next monitor
+MASTER      # <delta>    the master area, as a fraction
+NMASTER     # <n>
+CLOSE
+ZOOM
+FLOAT
+FULLSCREEN
+RELOAD
+QUIT

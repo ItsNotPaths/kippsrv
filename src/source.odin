@@ -56,6 +56,7 @@ Source :: struct {
 	buf:     [dynamic]byte,
 	argv:    []string,   // exec, kept so it can be run again
 	path:    string,     // sock, kept so it can be dialled again
+	cmd_path: string,    // where a command goes out, when it is not the socket
 	base:    i64,        // the period the configuration asked for
 	every:   i64,        // the period in use, which backoff can stretch
 	idle:    int,        // polls in a row that changed nothing
@@ -258,6 +259,36 @@ src_timer :: proc(ss: ^Sources, name: string, every_ms: i64,
 	})), true
 }
 
+// ------------------------------------------------------------- outbound
+
+// A command leaves the daemon here, and nowhere else.
+//
+// A source that names `cmd` has that path opened for the write and closed
+// after it. The channel is a FIFO, opening one costs microseconds, and a
+// window manager that restarted since the last command is found rather than
+// written into the inode it left behind. A socket source with no `cmd`
+// answers on the connection it already has.
+//
+// The line limit is what makes a write whole or nothing: a FIFO write under
+// PIPE_BUF cannot interleave with another writer's.
+src_send :: proc(s: ^Source, data: []byte) -> bool {
+	if len(data) == 0 || len(data) > MAX_LINE do return false
+
+	fd := s.fd
+	opened := false
+	if s.cmd_path != "" {
+		cs := strings.clone_to_cstring(s.cmd_path, context.temp_allocator)
+		fd = posix.open(cs, {.WRONLY, .NONBLOCK, .CLOEXEC})
+		if fd < 0 do return false
+		opened = true
+	} else if s.kind != .Sock || s.done || s.fd < 0 {
+		return false
+	}
+	defer if opened do posix.close(fd)
+
+	return int(posix.write(fd, raw_data(data), c.size_t(len(data)))) == len(data)
+}
+
 src_close :: proc(ss: ^Sources) {
 	for s in ss.list {
 		if s.kind == .Dbus do dbus_close(s)
@@ -266,6 +297,7 @@ src_close :: proc(ss: ^Sources) {
 		for a in s.argv do delete(a)
 		delete(s.argv)
 		delete(s.path)
+		delete(s.cmd_path)
 		delete(s.buf)
 		delete(s.name)
 		free(s)

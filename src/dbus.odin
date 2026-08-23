@@ -16,8 +16,9 @@ BMsg :: struct {}
 
 // libsystemd by default, basu with -define:BASU=true. Same API either way.
 //
-// The whole dependency is these 15 symbols. Nothing else in kippsrv touches
-// the bus, and a source that polls `busctl` instead needs none of it:
+// Reading the bus is these 15 symbols. Calling out and owning a name add
+// twelve more, below. Nothing else in kippsrv touches the bus, and a source
+// that polls `busctl` instead needs none of it:
 //
 //   sd_bus_default_user            sd_bus_message_get_path
 //   sd_bus_default_system          sd_bus_message_get_interface
@@ -50,6 +51,11 @@ foreign sdbus {
 	bus_message_read_basic      :: proc(m: ^BMsg, type: u8, p: rawptr) -> c.int ---
 	bus_message_enter_container :: proc(m: ^BMsg, type: u8, contents: cstring) -> c.int ---
 	bus_message_exit_container  :: proc(m: ^BMsg) -> c.int ---
+
+	// Calling out. The only thing a consumer cannot do for itself, because
+	// the connection an item registered on is this process's.
+	bus_message_new_method_call :: proc(bus: ^Bus, m: ^^BMsg, dest, path, iface, member: cstring) -> c.int ---
+	bus_message_set_expect_reply :: proc(m: ^BMsg, b: c.int) -> c.int ---
 
 	// Owning a name and answering on it.
 	bus_request_name            :: proc(bus: ^Bus, name: cstring, flags: u64) -> c.int ---
@@ -316,4 +322,68 @@ dbus_ready :: proc(s: ^Source, vm: ^Vm, out: ^[dynamic]Emit) -> bool {
 			append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, s.id})
 		}
 	}
+}
+
+// ---------------------------------------------------------------- calling
+
+// One argument, from text. D-Bus is typed and Lua has one number type, so
+// the adapter says which type it meant and this reads the text as that.
+@(private = "file")
+append_arg :: proc(m: ^BMsg, ch: u8, text: string) -> bool {
+	switch ch {
+	case 's', 'o', 'g':
+		// append_basic takes the string itself for these, not its address.
+		return bus_message_append_basic(m, ch, rawptr(cstr(text))) >= 0
+	case 'b':
+		v := b32(text == "true" || text == "1")
+		return bus_message_append_basic(m, ch, rawptr(&v)) >= 0
+	case 'y':
+		n, _ := strconv.parse_u64(text)
+		v := u8(n)
+		return bus_message_append_basic(m, ch, rawptr(&v)) >= 0
+	case 'i':
+		n, _ := strconv.parse_i64(text)
+		v := i32(n)
+		return bus_message_append_basic(m, ch, rawptr(&v)) >= 0
+	case 'u':
+		n, _ := strconv.parse_u64(text)
+		v := u32(n)
+		return bus_message_append_basic(m, ch, rawptr(&v)) >= 0
+	case 'x':
+		v, _ := strconv.parse_i64(text)
+		return bus_message_append_basic(m, ch, rawptr(&v)) >= 0
+	case 't':
+		v, _ := strconv.parse_u64(text)
+		return bus_message_append_basic(m, ch, rawptr(&v)) >= 0
+	case 'd':
+		v, _ := strconv.parse_f64(text)
+		return bus_message_append_basic(m, ch, rawptr(&v)) >= 0
+	}
+	return false   // a container needs a shape, and text does not carry one
+}
+
+// Call a method on the source's own bus.
+//
+// No reply is asked for. SPEC.md says a command that succeeds gets no answer
+// and the facts that follow show what it did, so there is nothing to wait
+// for, and an application that is slow to act cannot stall the loop.
+dbus_call :: proc(s: ^Source, call: Cmd_Call) -> bool {
+	if s == nil || s.bus == nil do return false
+	if call.dest == "" || call.path == "" || call.iface == "" || call.member == "" {
+		return false
+	}
+	if len(call.sig) != len(call.args) do return false
+
+	m: ^BMsg
+	if bus_message_new_method_call(s.bus, &m, cstr(call.dest), cstr(call.path),
+	                               cstr(call.iface), cstr(call.member)) < 0 {
+		return false
+	}
+	defer bus_message_unref(m)
+
+	for i in 0 ..< len(call.sig) {
+		if !append_arg(m, call.sig[i], call.args[i]) do return false
+	}
+	bus_message_set_expect_reply(m, 0)
+	return bus_send(s.bus, m, nil) >= 0
 }

@@ -16,12 +16,6 @@ dump :: proc(s: ^Server, fd: posix.FD) {
 	for line in lines do send_to(s, fd, line)
 }
 
-// Nothing takes commands yet. The outbound half is an adapter function that
-// turns a command into bytes for its source. Until then, say so.
-command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
-	send_error(s, fd, "badcmd", m.kind, "no adapter takes commands yet")
-}
-
 @(private = "file")
 the_loop: ^Loop
 
@@ -68,6 +62,7 @@ main :: proc() {
 	ss := Sources{vm = v}
 	defer src_close(&ss)
 	n := config_start(v, &ss, &cfg)
+	cmd_bind(&ss)
 
 	store.path = cfg.state
 	defer store_close(&store)

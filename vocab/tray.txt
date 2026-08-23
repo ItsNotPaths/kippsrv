@@ -1,2 +1,13 @@
 # Tray icons, as org.kde.StatusNotifierWatcher reports them.
 tray        # <service/path> state=
+
+# Commands an adapter of this domain takes. Uppercase, per SPEC.md. These are
+# convention: vocab.sh checks the kinds an adapter emits, not the verbs it
+# claims. lint-core still forbids the core naming any of them.
+#
+# The subject is the item, as it registered. x and y are where the pointer
+# was, which is what an item places its own menu against.
+ACTIVATE    # <service/path> x= y=
+SECONDARY   # <service/path> x= y=
+MENU        # <service/path> x= y=
+SCROLL      # <service/path> delta= dir=vertical|horizontal

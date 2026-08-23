@@ -37,6 +37,18 @@ That one fact was dropped. Everything else is unaffected.
 `SPEC.md`. A window title or a media title can reach it. Truncate the field
 before emitting it.
 
+## E-cmdemit — an adapter emitted a fact while taking a command
+
+Those lines were dropped. The command itself was carried out.
+
+*For the adapter's maintainer.* A command produces no facts. `SPEC.md` says a
+command that succeeds gets no answer, and the state that follows the action is
+what shows it happened. An adapter that emits here is guessing at a result it
+has not seen yet, and the source it drives will report the real one a moment
+later.
+
+Return the bytes, the call, or the refusal. Emit nothing.
+
 ## E-full — the store is full
 
 Parts of your desktop have stopped updating. Restarting kippsrv clears it, and

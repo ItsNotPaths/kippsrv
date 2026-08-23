@@ -29,6 +29,7 @@ Src_Spec :: struct {
 	watcher: bool,       // own the StatusNotifierWatcher name on this bus
 	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
+	cmd:     string,     // where a command goes back out, when it is not `sock`
 	framing: Framing,
 }
 
@@ -182,6 +183,7 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 		s.watcher = field_bool(L, "watcher")
 		s.bus_name, _ = field_str(L, "bus_name")
 		s.every = field_int(L, "every")
+		s.cmd, _ = field_str(L, "cmd")
 		s.framing = field_framing(L)
 
 		if s.adapter == "" && !s.watcher {
@@ -199,6 +201,7 @@ config_free :: proc(cfg: ^Config) {
 	delete(cfg.state)
 	for s in cfg.sources {
 		delete(s.name); delete(s.adapter); delete(s.sock); delete(s.bus_name)
+		delete(s.cmd)
 		for a in s.exec do delete(a)
 		delete(s.exec)
 		for a in s.dbus do delete(a)
@@ -228,19 +231,18 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			loaded[spec.adapter] = a
 		}
 
+		src: ^Source
 		ok: bool
 		switch {
 		case len(spec.exec) > 0:
-			src: ^Source
 			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.framing, spec.every)
 			if ok do src.steady = spec.steady
 		case spec.sock != "":
-			_, ok = src_sock(ss, spec.name, spec.sock, a, spec.framing)
+			src, ok = src_sock(ss, spec.name, spec.sock, a, spec.framing)
 		case len(spec.dbus) > 0 || spec.watcher:
-			d: ^Source
-			d, ok = dbus_open(ss, spec.name, spec.system, spec.dbus, a)
+			src, ok = dbus_open(ss, spec.name, spec.system, spec.dbus, a)
 			if ok && spec.watcher {
-				ok = watcher_start(d, spec.bus_name != "" \
+				ok = watcher_start(src, spec.bus_name != "" \
 					? spec.bus_name : WATCHER_NAME)
 			}
 		case spec.timer:
@@ -250,7 +252,7 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 				fmt.eprintfln("config: timer %q needs every > 0, skipped", spec.name)
 				continue
 			}
-			_, ok = src_timer(ss, spec.name, spec.every, a)
+			src, ok = src_timer(ss, spec.name, spec.every, a)
 		case:
 			fmt.eprintfln("config: source %q names no exec, sock or timer", spec.name)
 			continue
@@ -259,6 +261,7 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			fmt.eprintfln("config: source %q would not start", spec.name)
 			continue
 		}
+		src.cmd_path = strings.clone(spec.cmd)
 		started += 1
 	}
 	return started

@@ -37,14 +37,14 @@ sync       state
 | `src/lua.odin` | the VM, the fence, a seven-function script surface |
 | `src/source.odin` | foreign sources and their framing |
 | `src/store.odin` | current truth: dedup, the dump, the projection |
-| `src/dbus.odin` | D-Bus signals, through sd-bus |
+| `src/dbus.odin` | D-Bus signals and calls, through sd-bus |
+| `src/command.odin` | the outbound seam: a command, offered to each source |
 | `src/watcher.odin` | owns `org.kde.StatusNotifierWatcher` |
 | `src/config.odin` | the configuration file, which is Lua |
 | `src/main.odin` | load the config, serve, run |
 
-Ten adapters across seven domains in `lua/`. Everything works except the
-outbound command path, so a consumer can read the desktop but cannot yet drive
-it.
+Twelve adapters across seven domains in `lua/`. A consumer reads the whole
+desktop off one socket, and drives what only this process can reach.
 
 ## Configuration is Lua
 
@@ -211,6 +211,34 @@ sources it takes to read it.
 
 kippsrv holds no routes. It names sources, never consumers.
 
+## Commands go back out
+
+A consumer sends an uppercase line on the same connection. Each source is
+offered it in configuration order and the first adapter that answers owns it.
+
+| An adapter returns | The core does |
+| --- | --- |
+| nothing | asks the next source |
+| a string | writes those bytes to the source's channel |
+| a table | makes that method call on the source's own bus |
+| `nil, code, msg` | sends back that `error` line |
+
+A source that names `cmd` has that path opened for each write. One without it
+answers on the socket it already has. There is no third way out, and an adapter
+sees neither descriptor. `lua/wm/hedl.lua` is the first shape, `lua/tray/snw.lua`
+the second, `src/command.odin` the whole of it.
+
+```lua
+{ name = "wm", adapter = "lua/wm/hedl.lua",
+  sock = "$XDG_RUNTIME_DIR/hedl/kipp", cmd = "$XDG_RUNTIME_DIR/hedl/cmd" },
+```
+
+**The path is narrow on purpose.** Most of what a consumer wants is to run a
+command, and anything can run a command. What is left is where kippsrv holds
+the only descriptor that reaches the thing. The tray is the case with no other
+way: an icon is activated on the connection it registered on, and that
+connection is this process's.
+
 ## The fence
 
 A script gets parsed lines and returns fields. It never holds a descriptor and
@@ -291,8 +319,9 @@ basu is pinned in the Makefile, not copied into this repo. 34k lines of someone
 else's C does not belong in the tree, and a pinned commit gives the same
 reproducibility. Building it needs meson, ninja and gperf.
 
-The dependency is 15 symbols, listed at the top of `src/dbus.odin`, plus five
-more for owning a name. All 20 are in basu. Nothing else in kippsrv touches the
+The dependency is 15 symbols for reading, listed at the top of `src/dbus.odin`,
+two for calling out and ten for owning a name and answering on it. All 27 are
+in basu. Nothing else in kippsrv touches the
 bus, and a source polling `busctl` needs none of it. That is how
 `lua/media/mpris.lua` worked before `dbus.odin` existed.
 
