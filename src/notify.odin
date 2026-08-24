@@ -52,6 +52,7 @@ Notifier :: struct {
 	dropped: [dynamic]u32,   // closed, and the store must be told
 	next:    u32,
 	dirty:   bool,
+	src:     int,   // the source that owns it, so its adapter is the one fed
 }
 
 @(private = "file")
@@ -300,6 +301,7 @@ notify_start :: proc(d: ^Source, name := NOTIFY_NAME) -> bool {
 		return false
 	}
 	n.bus = d.bus
+	n.src = d.id
 	n.live = make([dynamic]Note)
 	n.dropped = make([dynamic]u32)
 	// 0 means "no replacement" in the protocol, so it is never an id.
@@ -367,7 +369,10 @@ notify_start :: proc(d: ^Source, name := NOTIFY_NAME) -> bool {
 // watcher_pass: these are facts about a D-Bus interface, and the kind they
 // become is lua/notify/fdo.lua's to decide.
 notify_pass :: proc(vm: ^Vm, a: Adapter, out: ^[dynamic]Emit, src: int) {
-	if n.bus == nil || !n.dirty do return
+	// Every D-Bus source is offered this, and the first one clears the flag.
+	// Only the source that started the server has an adapter that knows what
+	// a notification is, so the others must not be the ones to take it.
+	if n.bus == nil || !n.dirty || src != n.src do return
 	n.dirty = false
 
 	b := strings.builder_make(context.temp_allocator)

@@ -291,8 +291,15 @@ src_send :: proc(s: ^Source, data: []byte) -> bool {
 
 src_close :: proc(ss: ^Sources) {
 	for s in ss.list {
-		if s.kind == .Dbus do dbus_close(s)
-		if s.fd >= 0 do posix.close(s.fd)
+		// The bus owns its descriptor, and two sources on one connection --
+		// sd_bus_default_user hands back the same one -- hold the same fd.
+		// Closing it here as well is a second close of a live descriptor, and
+		// basu asserts on the third.
+		if s.kind == .Dbus {
+			dbus_close(s)
+		} else if s.fd >= 0 {
+			posix.close(s.fd)
+		}
 		if s.pid > 0 do posix.kill(s.pid, .SIGTERM)
 		for a in s.argv do delete(a)
 		delete(s.argv)

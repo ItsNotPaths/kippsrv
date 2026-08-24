@@ -175,8 +175,15 @@ if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
 return {
 	socket = "$NSOCK",
 	state  = "$NSOCK.state",
-	sources = { { name = "notify", notify = true, bus_name = "$NNAME",
-	              adapter = "lua/notify/fdo.lua" } },
+	sources = {
+		-- The tray comes first on purpose. Every D-Bus source is offered
+		-- the servers' state, and the first one to take it clears the flag,
+		-- so a notification would reach the tray's adapter and stop there.
+		{ name = "tray", watcher = true, bus_name = "$NNAME.w",
+		  adapter = "lua/tray/snw.lua" },
+		{ name = "notify", notify = true, bus_name = "$NNAME",
+		  adapter = "lua/notify/fdo.lua" },
+	},
 }
 NCONFEOF
 	./kippsrv "$NCONF" 2>/dev/null &

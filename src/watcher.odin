@@ -95,6 +95,7 @@ Watcher :: struct {
 	dropped: [dynamic]string,   // left the bus, and the store must be told
 	hosts:   [dynamic]string,   // bus names, so one that exits stops counting
 	dirty:   bool,            // something changed, so the adapter is owed a line
+	src:     int,             // the source that owns it, so its adapter is fed
 }
 
 @(private = "file")
@@ -264,6 +265,7 @@ watcher_start :: proc(d: ^Source, name := WATCHER_NAME) -> bool {
 		return false
 	}
 	w.bus = d.bus
+	w.src = d.id
 	w.items = make([dynamic]string)
 	w.dropped = make([dynamic]string)
 	w.hosts = make([dynamic]string)
@@ -326,7 +328,9 @@ watcher_start :: proc(d: ^Source, name := WATCHER_NAME) -> bool {
 // What is registered, as one JSON line for an adapter to name. "items" and
 // "dropped" are facts about a D-Bus interface, not nouns of the desktop.
 watcher_pass :: proc(vm: ^Vm, a: Adapter, out: ^[dynamic]Emit, src: int) {
-	if w.bus == nil || !w.dirty do return
+	// See notify_pass: the first source offered this would otherwise clear the
+	// flag for the one whose adapter actually names the kind.
+	if w.bus == nil || !w.dirty || src != w.src do return
 	w.dirty = false
 
 	b := strings.builder_make(context.temp_allocator)
