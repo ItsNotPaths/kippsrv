@@ -14,6 +14,15 @@
 # manager that identifies things by window instead resolves that in its own
 # adapter, which is the work an adapter exists to do.
 focus       # <monitor>                       the focused monitor
+
+# One fact for every tag of a monitor, not one for each tag. A per-tag fact can
+# only say "this one is no longer selected" by leaving it out, and the store
+# passes on a line that changed, never an absence. Moving between two empty
+# tags reached no consumer at all until this replaced it.
+tags        # <monitor> used=1,3 sel=2 urgent=
+
+# The older shape, still what lua/wm/{sway,dwl,hypr,i3}.lua produce. They have
+# the same hole and want the same treatment before anything reads them.
 tag         # <monitor> <n> state=...         one line per non-empty tag
 layout      # <monitor> <name>
 title       # <monitor> text=              what to show for that monitor
