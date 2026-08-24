@@ -387,7 +387,11 @@ src_timeout :: proc(ss: ^Sources, now: i64) -> i32 {
 	best: i64 = -1
 	for s in ss.list {
 		if s.every == 0 || s.dead do continue
-		if s.kind == .Exec && !s.done do continue
+		// A source that is running has nothing due. Its period says when to
+		// start it again, not when to look at it, and a socket that is
+		// connected is running. Counting one gave poll a zero timeout and
+		// turned the loop into a spin.
+		if s.kind != .Timer && !s.done do continue
 		left := max(0, s.due - now)
 		if best < 0 || left < best do best = left
 	}

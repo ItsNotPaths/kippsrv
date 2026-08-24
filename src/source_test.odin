@@ -154,3 +154,19 @@ an_idle_source_backs_off :: proc(t: ^testing.T) {
 	for _ in 0 ..< 6 do src_report(&ss, 0)
 	testing.expect_value(t, s.every, i64(2000))
 }
+
+// A connected socket is not due for anything. Counting its redial period gave
+// poll a zero timeout, and the loop spun at one whole core.
+@(test)
+a_running_source_has_no_deadline :: proc(t: ^testing.T) {
+	ss: Sources
+	defer delete(ss.list)
+
+	live := Source{kind = .Sock, every = RETRY_MS, base = RETRY_MS, done = false}
+	append(&ss.list, &live)
+	testing.expect_value(t, src_timeout(&ss, now_ms()), -1)
+
+	live.done = true
+	live.due = now_ms() + 1000
+	testing.expect(t, src_timeout(&ss, now_ms()) > 0, "a closed socket is due again")
+}
