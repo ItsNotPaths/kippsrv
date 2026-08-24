@@ -59,6 +59,7 @@ return {
 	state  = "$XDG_RUNTIME_DIR/kippsrv.state",
 	sources = {
 		{ name = "tray", watcher = true, adapter = "lua/tray/snw.lua" },
+		{ name = "notify", notify = true, adapter = "lua/notify/fdo.lua" },
 
 		{ name = "wm-seed", adapter = "lua/wm/hypr.lua",
 		  exec = {"hyprctl", "monitors", "-j"} },
@@ -188,6 +189,7 @@ manager adapters written here shared one kind out of nine.
 | `media` | 1 | mpris |
 | `backlight` | 1 | brightnessctl |
 | `tray` | 1 | snw |
+| `notify` | 1 | fdo |
 | `bt` | 2 | bluez |
 
 **These files are a lint, not a schema.** The daemon holds no vocabulary and

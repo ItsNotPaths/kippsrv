@@ -27,6 +27,7 @@ Src_Spec :: struct {
 	timer:   bool,       // a bare heartbeat
 	steady:  bool,       // keep the period fixed, do not back off when idle
 	watcher: bool,       // own the StatusNotifierWatcher name on this bus
+	notify:  bool,       // own org.freedesktop.Notifications on this bus
 	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
 	cmd:     string,     // where a command goes back out, when it is not `sock`
@@ -181,12 +182,13 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 		s.timer = field_bool(L, "timer")
 		s.steady = field_bool(L, "steady")
 		s.watcher = field_bool(L, "watcher")
+		s.notify = field_bool(L, "notify")
 		s.bus_name, _ = field_str(L, "bus_name")
 		s.every = field_int(L, "every")
 		s.cmd, _ = field_str(L, "cmd")
 		s.framing = field_framing(L)
 
-		if s.adapter == "" && !s.watcher {
+		if s.adapter == "" && !s.watcher && !s.notify {
 			fmt.eprintfln("config: source %d has no adapter, skipped", i)
 			continue
 		}
@@ -239,11 +241,15 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			if ok do src.steady = spec.steady
 		case spec.sock != "":
 			src, ok = src_sock(ss, spec.name, spec.sock, a, spec.framing)
-		case len(spec.dbus) > 0 || spec.watcher:
+		case len(spec.dbus) > 0 || spec.watcher || spec.notify:
 			src, ok = dbus_open(ss, spec.name, spec.system, spec.dbus, a)
 			if ok && spec.watcher {
 				ok = watcher_start(src, spec.bus_name != "" \
 					? spec.bus_name : WATCHER_NAME)
+			}
+			if ok && spec.notify {
+				ok = notify_start(src, spec.bus_name != "" \
+					? spec.bus_name : NOTIFY_NAME)
 			}
 		case spec.timer:
 			// every defaults to 0, and a source with no period is skipped by

@@ -1,0 +1,10 @@
+# Notifications, as org.freedesktop.Notifications delivers them. kippsrv owns
+# the name, so this is the daemon rather than a reader of one.
+notif       # <id> app= summary= body= icon= action= urgency=low|normal|critical read=0|1
+
+# Commands an adapter of this domain takes. Uppercase, per SPEC.md. Both go
+# back out as a method call on the bus kippsrv already holds: CLOSE is the
+# spec's own member, READ is ours, because the spec has no idea of a
+# notification that waits to be looked at.
+NOTIFY-CLOSE  # <id>
+NOTIFY-READ   # no subject. Everything live becomes read=1

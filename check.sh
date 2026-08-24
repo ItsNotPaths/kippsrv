@@ -163,6 +163,73 @@ else
 	echo "skip  watcher (no busctl or no session bus)"
 fi
 
+# The notification server owns a test name, never org.freedesktop.Notifications.
+# Taking that one stops whatever holds it, which is not a thing a test does.
+if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+	NSOCK=/tmp/kippsrv-n.$$.sock
+	NCONF=/tmp/kippsrv-n.$$.lua
+	NNAME=org.kippsrv.CheckNotify.p$$
+	NPATH=/org/freedesktop/Notifications
+	NIFACE=org.freedesktop.Notifications
+	cat > "$NCONF" <<NCONFEOF
+return {
+	socket = "$NSOCK",
+	state  = "$NSOCK.state",
+	sources = { { name = "notify", notify = true, bus_name = "$NNAME",
+	              adapter = "lua/notify/fdo.lua" } },
+}
+NCONFEOF
+	./kippsrv "$NCONF" 2>/dev/null &
+	NSRV=$!
+	sleep 0.4
+
+	# The reply is the id, and the id is what everything else names.
+	id=$(busctl --user call "$NNAME" "$NPATH" "$NIFACE" Notify \
+		'susssasa{sv}i' grim 0 camera "Screenshot saved" body 0 1 urgency y 2 0 \
+		2>/dev/null | awk '{print $2}')
+	sleep 0.4
+	line=$(grep '^notif' "$NSOCK.state" 2>/dev/null | head -1)
+
+	if [ "$id" = "1" ]; then
+		echo "ok    Notify answers with an id"
+	else
+		echo "FAIL  Notify did not answer with an id ($id)"
+		FAILS=$((FAILS + 1))
+	fi
+	if printf '%s' "$line" | grep -q 'app=grim' &&
+	   printf '%s' "$line" | grep -q 'urgency=critical'; then
+		echo "ok    the notif kind is named in Lua, and a hint reaches it"
+	else
+		echo "FAIL  no usable notif fact reached the store ($line)"
+		FAILS=$((FAILS + 1))
+	fi
+
+	busctl --user call "$NNAME" "$NPATH" \
+		place.paths.kippsrv.Notifications MarkAllRead >/dev/null 2>&1
+	sleep 0.4
+	if grep '^notif' "$NSOCK.state" 2>/dev/null | grep -q 'read=1'; then
+		echo "ok    a notification can be marked read"
+	else
+		echo "FAIL  MarkAllRead left nothing read"
+		FAILS=$((FAILS + 1))
+	fi
+
+	busctl --user call "$NNAME" "$NPATH" "$NIFACE" \
+		CloseNotification u "${id:-1}" >/dev/null 2>&1
+	sleep 0.4
+	if ! grep -q '^notif' "$NSOCK.state" 2>/dev/null; then
+		echo "ok    closing one drops its fact"
+	else
+		echo "FAIL  the closed notification is still a fact"
+		FAILS=$((FAILS + 1))
+	fi
+
+	kill "$NSRV" 2>/dev/null
+	rm -f "$NSOCK" "$NSOCK.state" "$NCONF"
+else
+	echo "skip  notify (no busctl or no session bus)"
+fi
+
 if [ -s "$SOCK.state" ]; then
 	echo "ok    projection written"
 else

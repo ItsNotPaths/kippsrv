@@ -81,7 +81,8 @@ VT_PROP   :: 0x50   // 'P'
 PROPERTY_EMITS_CHANGE :: u64(1) << 5
 UNPRIVILEGED          :: u64(1) << 2
 
-@(private = "file")
+// Shared with notify.odin: the vtable layout is the bus library's, not any one
+// protocol's, so the second server built on it uses the same head.
 vt_head :: proc(type: u64, flags: u64) -> u64 {
 	return type | (flags << 8)
 }

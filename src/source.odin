@@ -500,12 +500,14 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 
 // Run every timer that is due, and start every exec source whose period came
 // round again.
-// The watcher's list, through the adapter of the source that owns it.
+// What the servers hold, through the adapter of the source that owns each.
+// Both are the same shape: state in Odin, named by Lua, once per pass.
 watcher_facts :: proc(ss: ^Sources) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {
 		if s.kind == .Dbus && s.adapter != NO_ADAPTER {
 			watcher_pass(ss.vm, s.adapter, &out, s.id)
+			notify_pass(ss.vm, s.adapter, &out, s.id)
 		}
 	}
 	return out[:]
