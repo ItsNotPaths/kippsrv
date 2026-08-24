@@ -1,0 +1,21 @@
+# Bluetooth, as bluez reports it.
+#
+# The subject is the address, which is a MAC and can hold no '='. A name a
+# person typed can, and bluez lets a person type one.
+bt          # <address> name= icon= state=connected|paired|seen battery= radio=
+
+# The controller, not the kippsrv adapter file. One for each hciN.
+bt_radio    # <hciN> name= address= state=off|on|scanning
+
+# Commands a bluetooth adapter takes. Uppercase, per SPEC.md. These are
+# convention: vocab.sh checks the kinds an adapter emits, not the verbs it
+# claims. lint-core still forbids the core naming any of them.
+#
+# Powering the radio is not here. It is a property write, which needs a
+# variant, and the outbound path carries basic types only. It is also
+# something anything on the machine can do, which is where the line is.
+CONNECT     # <address>
+DISCONNECT  # <address>
+PAIR        # <address>
+FORGET      # <address>            the radio forgets the pairing
+SCAN        # on|off  radio=hciN   radio= defaults to the only one

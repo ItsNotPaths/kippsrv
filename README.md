@@ -43,7 +43,7 @@ sync       state
 | `src/config.odin` | the configuration file, which is Lua |
 | `src/main.odin` | load the config, serve, run |
 
-Twelve adapters across seven domains in `lua/`. A consumer reads the whole
+Thirteen adapters across eight domains in `lua/`. A consumer reads the whole
 desktop off one socket, and drives what only this process can reach.
 
 ## Configuration is Lua
@@ -188,6 +188,7 @@ manager adapters written here shared one kind out of nine.
 | `media` | 1 | mpris |
 | `backlight` | 1 | brightnessctl |
 | `tray` | 1 | snw |
+| `bt` | 2 | bluez |
 
 **These files are a lint, not a schema.** The daemon holds no vocabulary and
 consults nothing at run time. An adapter may emit a kind nobody has heard of

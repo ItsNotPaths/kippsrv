@@ -46,6 +46,19 @@ return {
 		-- { name = "wm", adapter = "lua/wm/i3.lua", sock = "$SWAYSOCK",
 		--   framing = {kind = "prefix", header = 14, at = 6, width = 4, le = true} },
 
+		-- bluez, on the system bus. The stream is listed first on purpose:
+		-- both sources share the adapter file, and a command is answered by
+		-- the first source that names it, which has to be the one holding a
+		-- bus. The seed reads what is paired now; the stream carries every
+		-- connect, battery and scan result after it.
+		{ name = "bt", adapter = "lua/bt/bluez.lua", system = true,
+		  dbus = {"type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager'",
+		          "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties'"} },
+
+		{ name = "bt-seed", adapter = "lua/bt/bluez.lua",
+		  exec = {"busctl", "--system", "--json=short", "call", "org.bluez", "/",
+		          "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"} },
+
 		{ name = "net", adapter = "lua/net/nm.lua",
 		  exec = {"nmcli", "-t", "-f", "UUID,NAME,TYPE,DEVICE", "connection", "show"},
 		  every = 5000 },

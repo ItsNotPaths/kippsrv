@@ -114,6 +114,48 @@ w_str :: proc(b: ^strings.Builder, s: string) {
 	strings.write_byte(b, '"')
 }
 
+// Every integer D-Bus carries, as one. The wire type says how wide it is and
+// whether it is signed, and nothing above this cares.
+@(private = "file")
+r_int :: proc(m: ^BMsg, t: u8) -> (v: i64, ok: bool) {
+	switch t {
+	case 'y': x: u8;  bus_message_read_basic(m, t, &x); v = i64(x)
+	case 'b': x: b32; bus_message_read_basic(m, t, &x); v = i64(x)
+	case 'n': x: i16; bus_message_read_basic(m, t, &x); v = i64(x)
+	case 'q': x: u16; bus_message_read_basic(m, t, &x); v = i64(x)
+	case 'i': x: i32; bus_message_read_basic(m, t, &x); v = i64(x)
+	case 'u': x: u32; bus_message_read_basic(m, t, &x); v = i64(x)
+	case 'h': x: u32; bus_message_read_basic(m, t, &x); v = i64(x)
+	case 'x', 't': x: i64; bus_message_read_basic(m, t, &x); v = x
+	case: return 0, false
+	}
+	return v, true
+}
+
+// A dictionary key is any basic type, not a string only. bluez sends
+// ManufacturerData as a{qv}, and reading a uint16 through a cstring builds a
+// pointer out of two bytes of number, which segfaulted the daemon the moment
+// anything nearby advertised. A JSON key is a string, so a number becomes one.
+//
+// A double key is legal on the wire and has no sensible JSON form. Refusing
+// it drops that one message, which is what every other unreadable value does.
+@(private = "file")
+w_key :: proc(b: ^strings.Builder, m: ^BMsg, t: u8) -> bool {
+	if t == 's' || t == 'o' || t == 'g' {
+		x: cstring
+		if bus_message_read_basic(m, t, &x) < 0 do return false
+		w_str(b, string(x))
+		return true
+	}
+
+	v := r_int(m, t) or_return
+	buf: [24]byte
+	strings.write_byte(b, '"')
+	strings.write_string(b, strconv.write_int(buf[:], v, 10))
+	strings.write_byte(b, '"')
+	return true
+}
+
 // One value, in the shape `busctl --json=short` prints: {"type":..,"data":..}
 @(private = "file")
 w_value :: proc(b: ^strings.Builder, m: ^BMsg, depth := 0) -> bool {
@@ -130,17 +172,8 @@ w_value :: proc(b: ^strings.Builder, m: ^BMsg, depth := 0) -> bool {
 
 	switch t {
 	case 'y', 'b', 'n', 'q', 'i', 'u', 'x', 't', 'h':
-		v: i64
-		switch t {
-		case 'y': x: u8;  bus_message_read_basic(m, t, &x); v = i64(x)
-		case 'b': x: b32; bus_message_read_basic(m, t, &x); v = i64(x)
-		case 'n': x: i16; bus_message_read_basic(m, t, &x); v = i64(x)
-		case 'q': x: u16; bus_message_read_basic(m, t, &x); v = i64(x)
-		case 'i': x: i32; bus_message_read_basic(m, t, &x); v = i64(x)
-		case 'u': x: u32; bus_message_read_basic(m, t, &x); v = i64(x)
-		case 'h': x: u32; bus_message_read_basic(m, t, &x); v = i64(x)
-		case:     x: i64; bus_message_read_basic(m, t, &x); v = x
-		}
+		v, ok := r_int(m, t)
+		if !ok do return false
 		if t == 'b' {
 			strings.write_string(b, v != 0 ? "true" : "false")
 		} else {
@@ -175,12 +208,10 @@ w_value :: proc(b: ^strings.Builder, m: ^BMsg, depth := 0) -> bool {
 			first = false
 			if dict {
 				if bus_message_enter_container(m, et, ec) <= 0 do break
-				key: cstring
 				kt: u8
 				kc: cstring
-				bus_message_peek_type(m, &kt, &kc)
-				bus_message_read_basic(m, kt, &key)
-				w_str(b, string(key))
+				if bus_message_peek_type(m, &kt, &kc) <= 0 do return false
+				w_key(b, m, kt) or_return
 				strings.write_byte(b, ':')
 				w_value(b, m, depth + 1) or_return
 				bus_message_exit_container(m)
