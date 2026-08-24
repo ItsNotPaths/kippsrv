@@ -5,7 +5,8 @@
 -- as JSON and the kind is named in Lua. The core never says "notification".
 --
 --   notif  <id>  app=grim  summary=Screenshot saved  body=...
---                urgency=normal  read=0  action=open  icon=/path.png
+--                urgency=normal  read=0  icon=/path.png
+--                action=open  exec=satty -f /home/x/Pictures/a.png
 --
 -- The two verbs go back out the way the tray's do: a method call on the bus
 -- kippsrv already holds. Closing is the spec's own; being read is ours, on our
@@ -41,6 +42,7 @@ return {
 			       "body=" .. (one.body or ""),
 			       "icon=" .. (one.icon or ""),
 			       "action=" .. (one.action or ""),
+			       "exec=" .. (one.exec or ""),
 			       "urgency=" .. (URGENCY[one.urgency] or "normal"),
 			       "read=" .. (one.read and "1" or "0"))
 		end

@@ -42,7 +42,8 @@ Note :: struct {
 	summary: string,
 	body:    string,
 	urgency: u8,      // 0 low, 1 normal, 2 critical. The spec's own numbering
-	action:  string,  // the first action's key, which is what Return runs
+	action:  string,  // the first action's key, per the spec
+	exec:    string,  // a command the sender attached, which is what runs
 	read:    bool,
 }
 
@@ -60,7 +61,8 @@ n: Notifier
 
 @(private = "file")
 note_free :: proc(x: Note) {
-	delete(x.app); delete(x.icon); delete(x.summary); delete(x.body); delete(x.action)
+	delete(x.app); delete(x.icon); delete(x.summary); delete(x.body)
+	delete(x.action); delete(x.exec)
 }
 
 @(private = "file")
@@ -86,9 +88,13 @@ close_note :: proc(id: u32, reason: u32) -> bool {
 
 // ------------------------------------------------------------- the hints
 //
-// a{sv}. Only two keys change what a fact says: urgency, and an icon the
-// caller passed here instead of in app_icon. Everything else is skipped
+// a{sv}. Three keys change what a fact says, and everything else is skipped
 // without being read, which is what the variant's own length is for.
+//
+// x-kipp-exec is ours. The spec's answer is that the daemon emits
+// ActionInvoked and the sender does the work, which needs the sender to still
+// be running -- notify-send has exited long before anyone reads the thing. A
+// command carried on the notification outlives the process that sent it.
 
 @(private = "file")
 read_hints :: proc(m: ^BMsg, note: ^Note) {
@@ -113,6 +119,11 @@ read_hints :: proc(m: ^BMsg, note: ^Note) {
 				case name == "urgency" && t == 'y':
 					v: u8
 					if bus_message_read_basic(m, 'y', &v) >= 0 do note.urgency = v
+				case name == "x-kipp-exec" && t == 's':
+					v: cstring
+					if bus_message_read_basic(m, 's', &v) >= 0 {
+						note.exec = strings.clone(string(v))
+					}
 				case (name == "image-path" || name == "image_path") && t == 's':
 					v: cstring
 					if bus_message_read_basic(m, 's', &v) >= 0 && note.icon == "" {
@@ -392,6 +403,8 @@ notify_pass :: proc(vm: ^Vm, a: Adapter, out: ^[dynamic]Emit, src: int) {
 		strings.write_quoted_string(&b, note.icon)
 		strings.write_string(&b, ",\"action\":")
 		strings.write_quoted_string(&b, note.action)
+		strings.write_string(&b, ",\"exec\":")
+		strings.write_quoted_string(&b, note.exec)
 		strings.write_byte(&b, '}')
 	}
 	strings.write_string(&b, "],\"dropped\":[")

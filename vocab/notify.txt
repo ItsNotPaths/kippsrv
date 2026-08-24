@@ -1,6 +1,9 @@
 # Notifications, as org.freedesktop.Notifications delivers them. kippsrv owns
 # the name, so this is the daemon rather than a reader of one.
-notif       # <id> app= summary= body= icon= action= urgency=low|normal|critical read=0|1
+notif       # <id> app= summary= body= icon= urgency=low|normal|critical read=0|1
+            # action= is the spec's action key. exec= is a command the sender
+            # attached as the x-kipp-exec hint, and is what a panel runs.
+            # <id> ... action= exec=
 
 # Commands an adapter of this domain takes. Uppercase, per SPEC.md. Both go
 # back out as a method call on the bus kippsrv already holds: CLOSE is the
