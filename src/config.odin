@@ -25,7 +25,7 @@ Src_Spec :: struct {
 	dbus:    []string,   // match rules, or
 	system:  bool,       // the system bus instead of the session bus
 	timer:   bool,       // a bare heartbeat
-	steady:  bool,       // keep the period fixed, do not back off when idle
+	throttle: Throttle,  // how often this source may reach its adapter
 	watcher: bool,       // own the StatusNotifierWatcher name on this bus
 	notify:  bool,       // own org.freedesktop.Notifications on this bus
 	bus_name: string,    // a different name, for testing beside a live one
@@ -140,6 +140,25 @@ field_framing :: proc(L: ^lua.State) -> Framing {
 	return Lines{}
 }
 
+// How often a source may reach its adapter. Absent means the defaults.
+// `false` means never held back. A table overrides the keys it names.
+@(private = "file")
+field_throttle :: proc(L: ^lua.State) -> Throttle {
+	defer lua.pop(L, 1)
+	t := THROTTLE
+
+	switch lua.getfield(L, -1, "throttle") {
+	case c.int(lua.TBOOLEAN):
+		if !bool(lua.toboolean(L, -1)) do return Throttle{}
+	case c.int(lua.TTABLE):
+		if v := field_int(L, "idle");    v > 0 do t.idle = int(v)
+		if v := field_int(L, "factor");  v > 0 do t.factor = int(v)
+		if v := field_int(L, "ceiling"); v > 0 do t.ceiling = v
+		if v := field_int(L, "min_gap"); v > 0 do t.min_gap = v
+	}
+	return t
+}
+
 // ---------------------------------------------------------------- loading
 
 config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
@@ -180,7 +199,7 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 		s.dbus = field_list(L, "dbus")
 		s.system = field_bool(L, "system")
 		s.timer = field_bool(L, "timer")
-		s.steady = field_bool(L, "steady")
+		s.throttle = field_throttle(L)
 		s.watcher = field_bool(L, "watcher")
 		s.notify = field_bool(L, "notify")
 		s.bus_name, _ = field_str(L, "bus_name")
@@ -238,7 +257,6 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 		switch {
 		case len(spec.exec) > 0:
 			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.framing, spec.every)
-			if ok do src.steady = spec.steady
 		case spec.sock != "":
 			src, ok = src_sock(ss, spec.name, spec.sock, a, spec.framing)
 		case len(spec.dbus) > 0 || spec.watcher || spec.notify:
@@ -267,6 +285,7 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			fmt.eprintfln("config: source %q would not start", spec.name)
 			continue
 		}
+		src.thr = spec.throttle
 		src.cmd_path = strings.clone(spec.cmd)
 		started += 1
 	}

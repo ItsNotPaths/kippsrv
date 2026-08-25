@@ -137,22 +137,59 @@ an_idle_source_backs_off :: proc(t: ^testing.T) {
 	if !testing.expect(t, ok) do return
 
 	s.done = true
-	ss.last = s
 
 	testing.expect_value(t, s.every, i64(2000))
-	for _ in 0 ..< 3 do src_report(&ss, 0)      // three quiet cycles
+	for _ in 0 ..< 3 do cycle(&ss, s, 0)        // three quiet cycles
 	testing.expect_value(t, s.every, i64(4000))
-	for _ in 0 ..< 3 do src_report(&ss, 0)
+	for _ in 0 ..< 3 do cycle(&ss, s, 0)
 	testing.expect_value(t, s.every, i64(32000))
 
-	src_report(&ss, 1)                          // something changed
+	cycle(&ss, s, 1)                            // something changed
 	testing.expect_value(t, s.every, i64(2000))
 	testing.expect_value(t, s.idle, 0)
 
-	// a source told to stay steady is left alone
-	s.steady = true
-	for _ in 0 ..< 6 do src_report(&ss, 0)
+	// a source told not to throttle is left alone
+	s.thr = {}
+	for _ in 0 ..< 6 do cycle(&ss, s, 0)
 	testing.expect_value(t, s.every, i64(2000))
+}
+
+// One run of a source, and what the store made of it.
+@(private = "file")
+cycle :: proc(ss: ^Sources, s: ^Source, moved: int) {
+	s.settled = false
+	s.moved = moved
+	src_settle(ss)
+}
+
+// A throttled source reaches its adapter once a window, and the newest unit
+// it was given in between is not lost: it goes out when the window closes.
+@(test)
+a_throttled_source_holds_the_newest_unit :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+	ss := Sources{vm = v}
+	defer src_close(&ss)
+
+	a, _ := vm_load(v, "lua/wm/example.lua")
+	s, ok := src_exec(&ss, "p", {"true"}, a, Lines{}, 0)
+	if !testing.expect(t, ok) do return
+	s.thr.min_gap = 10_000
+
+	out := make([dynamic]Emit, context.temp_allocator)
+	src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 1"))
+	testing.expect_value(t, len(out), 2)          // the first unit passes
+
+	src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 2"))
+	src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 3"))
+	testing.expect_value(t, len(out), 2)          // both were held
+	testing.expect_value(t, string(s.held[:]), "focus eDP-1 3")
+
+	s.gap_due = 0                                 // the window closed
+	held := src_tick(&ss, now_ms())
+	testing.expect_value(t, len(held), 2)
+	testing.expect_value(t, held[1].line, "tag\teDP-1\t3\tstate=focused,occupied")
+	testing.expect_value(t, len(s.held), 0)
 }
 
 // A connected socket is not due for anything. Counting its redial period gave
@@ -169,4 +206,12 @@ a_running_source_has_no_deadline :: proc(t: ^testing.T) {
 	live.done = true
 	live.due = now_ms() + 1000
 	testing.expect(t, src_timeout(&ss, now_ms()) > 0, "a closed socket is due again")
+
+	// A held unit is a deadline of its own, or poll would sleep through it.
+	held := Source{kind = .Sock, done = false, gap_due = now_ms() + 20}
+	append(&held.held, 'x')
+	defer delete(held.held)
+	append(&ss.list, &held)
+	gap := src_timeout(&ss, now_ms())
+	testing.expect(t, gap >= 0 && gap <= 20, "a held unit is due")
 }

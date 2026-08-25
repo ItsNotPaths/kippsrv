@@ -59,8 +59,12 @@ Source :: struct {
 	cmd_path: string,    // where a command goes out, when it is not the socket
 	base:    i64,        // the period the configuration asked for
 	every:   i64,        // the period in use, which backoff can stretch
-	idle:    int,        // polls in a row that changed nothing
-	steady:  bool,       // backoff is off for this source
+	idle:    int,        // cycles in a row that changed nothing
+	moved:   int,        // lines this cycle that passed the store
+	settled: bool,       // this cycle's outcome has been counted
+	thr:     Throttle,   // how often this source may reach its adapter
+	held:    [dynamic]byte,  // newest unit, waiting for the throttle window
+	gap_due: i64,        // earliest next adapter call, when min_gap is set
 	due:     i64,        // next fire on the monotonic clock
 	done:    bool,       // ended for now
 	fails:   int,        // respawns in a row that did not start
@@ -73,7 +77,6 @@ Sources :: struct {
 	vm:      ^Vm,
 	list:    [dynamic]^Source,
 	next_id: int,
-	last:    ^Source,     // the source src_ready just handled
 	warned:  bool,        // the poll set overflowed, reported once
 }
 
@@ -82,9 +85,18 @@ RETRY_MS  :: 2000      // how often a closed socket is dialled again
 
 // A poll that learns nothing still costs a fork, an exec and a Lua call. The
 // store spares the consumers, not the machine.
-IDLE_BEFORE_BACKOFF :: 3
-BACKOFF_MAX_FACTOR  :: 16
-BACKOFF_CEILING_MS  :: 60_000
+//
+// A source with a period is slowed by stretching it. A source that is handed
+// its data cannot be slowed that way, so `min_gap` holds the newest unit back
+// instead. Both mean the same thing: how often this source reaches Lua.
+Throttle :: struct {
+	idle:    int,   // quiet cycles before the period stretches
+	factor:  int,   // most the period may stretch, as a multiple of the base
+	ceiling: i64,   // ms. Absolute cap on a stretched period
+	min_gap: i64,   // ms. Least time between two adapter calls. 0 is off
+}
+
+THROTTLE :: Throttle{idle = 3, factor = 16, ceiling = 60_000, min_gap = 0}
 
 // ------------------------------------------------------------------ reaping
 
@@ -116,6 +128,8 @@ set_flags :: proc(fd: posix.FD) {
 @(private = "file")
 add :: proc(ss: ^Sources, s: ^Source) -> ^Source {
 	s.buf = make([dynamic]byte)
+	s.held = make([dynamic]byte)
+	s.thr = THROTTLE
 	ss.next_id += 1
 	s.id = ss.next_id
 	append(&ss.list, s)
@@ -193,6 +207,7 @@ respawn :: proc(s: ^Source) -> bool {
 	s.fd = fds[0]
 	s.pid = pid
 	s.done = false
+	s.settled = false
 	clear(&s.buf)
 	return true
 }
@@ -235,6 +250,7 @@ redial :: proc(s: ^Source) -> bool {
 	set_flags(fd)
 	s.fd = fd
 	s.done = false
+	s.settled = false
 	clear(&s.buf)
 	return true
 }
@@ -306,6 +322,7 @@ src_close :: proc(ss: ^Sources) {
 		delete(s.path)
 		delete(s.cmd_path)
 		delete(s.buf)
+		delete(s.held)
 		delete(s.name)
 		free(s)
 	}
@@ -393,16 +410,22 @@ src_fds :: proc(ss: ^Sources, dst: []posix.pollfd) -> int {
 src_timeout :: proc(ss: ^Sources, now: i64) -> i32 {
 	best: i64 = -1
 	for s in ss.list {
+		if len(s.held) > 0 do nearest(&best, s.gap_due, now)
 		if s.every == 0 || s.dead do continue
 		// A source that is running has nothing due. Its period says when to
 		// start it again, not when to look at it, and a socket that is
 		// connected is running. Counting one gave poll a zero timeout and
 		// turned the loop into a spin.
 		if s.kind != .Timer && !s.done do continue
-		left := max(0, s.due - now)
-		if best < 0 || left < best do best = left
+		nearest(&best, s.due, now)
 	}
 	return i32(best)
+}
+
+@(private = "file")
+nearest :: proc(best: ^i64, due, now: i64) {
+	left := max(0, due - now)
+	if best^ < 0 || left < best^ do best^ = left
 }
 
 @(private = "file")
@@ -412,11 +435,36 @@ emit_into :: proc(out: ^[dynamic]Emit, es: []Emit, src: int) {
 	}
 }
 
+// The framing says which call the adapter gets. Nothing else needs to know.
+@(private = "file")
+feed :: proc(v: ^Vm, s: ^Source, unit: []byte) -> []Emit {
+	if _, is_lines := s.framing.(Lines); is_lines {
+		return vm_feed(v, s.adapter, string(unit))
+	}
+	return vm_feed_bytes(v, s.adapter, unit)
+}
+
+// One framed unit, either to the adapter now or held until the window opens.
+// Holding keeps the newest unit only: the point is to skip the Lua call, so
+// the units in between are dropped. A source whose units are events rather
+// than current values must not be given a `min_gap`.
+src_feed :: proc(v: ^Vm, s: ^Source, out: ^[dynamic]Emit, unit: []byte) {
+	if s.thr.min_gap > 0 {
+		now := now_ms()
+		if now < s.gap_due {
+			clear(&s.held)
+			append(&s.held, ..unit)
+			return
+		}
+		s.gap_due = now + s.thr.min_gap
+	}
+	emit_into(out, feed(v, s, unit), s.id)
+}
+
 // Read one source and return the kipp lines it produced. The lines live in
 // the temp allocator and die with the loop pass.
 src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
-	ss.last = nil
 
 	for s in ss.list {
 		if s.kind == .Dbus && s.fd == fd && !s.done {
@@ -432,7 +480,6 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 
 	for s in ss.list {
 		if s.fd != fd || s.done do continue
-		ss.last = s
 
 		eof := false
 		chunk: [4096]byte
@@ -476,19 +523,20 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 				s.dead = true
 				break
 			}
-			if _, is_lines := s.framing.(Lines); is_lines {
-				emit_into(&out, vm_feed(ss.vm, s.adapter, string(unit)), s.id)
-			} else {
-				emit_into(&out, vm_feed_bytes(ss.vm, s.adapter, unit), s.id)
-			}
+			src_feed(ss.vm, s, &out, unit)
 			consumed(s, unit)
 		}
 
 		if eof {
 			// A last line with no trailing newline is still a line.
 			if _, is_lines := s.framing.(Lines); is_lines && len(s.buf) > 0 {
-				emit_into(&out, vm_feed(ss.vm, s.adapter, string(s.buf[:])), s.id)
+				src_feed(ss.vm, s, &out, s.buf[:])
 				clear(&s.buf)
+			}
+			// A held unit is the source's last word. It goes before the flush.
+			if len(s.held) > 0 {
+				emit_into(&out, feed(ss.vm, s, s.held[:]), s.id)
+				clear(&s.held)
 			}
 			emit_into(&out, vm_flush(ss.vm, s.adapter), s.id)
 			posix.close(s.fd)
@@ -520,22 +568,43 @@ watcher_facts :: proc(ss: ^Sources) -> []Emit {
 	return out[:]
 }
 
-// A run that changed nothing is asked for less often. Anything new resets it.
-// By the source src_ready just handled: a run that ended has closed its fd.
-src_report :: proc(ss: ^Sources, changed: int) {
-	s := ss.last
-	if s == nil || !s.done do return                 // still reading, not a cycle
-	if s.kind != .Exec || s.base <= 0 || s.steady do return
+// A line that passed the store, credited to the source that produced it.
+src_moved :: proc(ss: ^Sources, id: int) {
+	for s in ss.list {
+		if s.id == id {
+			s.moved += 1
+			return
+		}
+	}
+}
 
-	if changed > 0 {
+// A cycle that changed nothing is asked for less often. Anything new resets it.
+// Only a source with a work period has one to stretch: a socket's `every` is
+// how often it is dialled again, not how often it is read.
+@(private = "file")
+back_off :: proc(s: ^Source) {
+	if s.kind != .Exec && s.kind != .Timer do return
+	if s.base <= 0 || s.thr.idle <= 0 do return
+
+	if s.moved > 0 {
 		s.idle = 0
 		s.every = s.base
 		return
 	}
 	s.idle += 1
-	if s.idle >= IDLE_BEFORE_BACKOFF {
-		s.every = min(s.every * 2, min(s.base * BACKOFF_MAX_FACTOR,
-		                               i64(BACKOFF_CEILING_MS)))
+	if s.idle >= s.thr.idle {
+		s.every = min(s.every * 2, min(s.base * i64(s.thr.factor), s.thr.ceiling))
+	}
+}
+
+// Once a pass, after everything a source produced has been through the store.
+// A cycle is one run of an exec source, or one beat of a timer.
+src_settle :: proc(ss: ^Sources) {
+	for s in ss.list {
+		if s.settled || !(s.done || s.kind == .Timer) do continue
+		back_off(s)
+		s.moved = 0
+		s.settled = true
 	}
 }
 
@@ -554,11 +623,19 @@ src_reap :: proc(ss: ^Sources) -> []int {
 src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {
+		// A held unit goes out when its window closes, so a source that then
+		// falls quiet is not left showing the value before last.
+		if len(s.held) > 0 && now >= s.gap_due {
+			emit_into(&out, feed(ss.vm, s, s.held[:]), s.id)
+			clear(&s.held)
+			s.gap_due = now + s.thr.min_gap
+		}
 		if now < s.due do continue
 
 		switch {
 		case s.kind == .Timer:
 			s.due = now + s.every
+			s.settled = false
 			emit_into(&out, vm_call(ss.vm, s.adapter, "tick"), s.id)
 		case s.done && s.every > 0:
 			// `dead` means the facts are stale. It does not mean stop

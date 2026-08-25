@@ -100,7 +100,7 @@ whole unit. Nothing in Lua reassembles a torn line or a torn frame.
 The end of a descriptor ends a batch and calls `flush`. A last line with no
 trailing newline is still a line.
 
-## Polls back off when they learn nothing
+## A quiet source is asked less often
 
 After three quiet cycles a source's period doubles, up to sixteen times the
 configured one or a minute, whichever is smaller. Anything new resets it.
@@ -116,11 +116,19 @@ The CPU is not really the point. 15 process creations a second leaves no idle
 window longer than about 66 ms, so deep C-states never engage. A status bar is
 the last thing that should keep a laptop awake.
 
-`steady = true` turns it off. Use it for anything a person drives: press the
-volume key and a backed-off source can take 32 seconds to notice. `audio` and
-`backlight` are both marked steady in the shipped config, and both are polls
-that should not exist. Volume is a PipeWire subscription, and
-`/sys/class/backlight/*/brightness` is watchable with inotify.
+`throttle` is the knob, per source. `throttle = false` turns it off. Use that
+for anything a person drives: press the volume key and a backed-off source can
+take 32 seconds to notice. `audio` and `backlight` are both `throttle = false`
+in the shipped config, and both are polls that should not exist. Volume is a
+PipeWire subscription, and `/sys/class/backlight/*/brightness` is watchable
+with inotify.
+
+A table names the parts, and the defaults are
+`throttle = { idle = 3, factor = 16, ceiling = 60000 }`. A `sock` or `dbus`
+source has no period to stretch, so it is slowed the other way:
+`throttle = { min_gap = 250 }` calls the adapter at most once per 250 ms,
+holding the newest unit and dropping the ones behind it. Give that only to a
+source whose units restate current truth. A dropped event is gone.
 
 ## The store
 

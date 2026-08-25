@@ -348,10 +348,9 @@ dbus_ready :: proc(s: ^Source, vm: ^Vm, out: ^[dynamic]Emit) -> bool {
 
 		line := w_message(m, context.temp_allocator)
 		if line == "" do continue      // the message would not convert
-		for e in vm_feed(vm, s.adapter, line) {
-			// stamped with the source, so its death can mark these stale
-			append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, s.id})
-		}
+		// Stamped with the source, so its death can mark these stale, and
+		// held back when the source is throttled.
+		src_feed(vm, s, out, transmute([]byte)line)
 	}
 }
 

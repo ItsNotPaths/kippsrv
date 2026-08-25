@@ -63,14 +63,15 @@ return {
 		  exec = {"nmcli", "-t", "-f", "UUID,NAME,TYPE,DEVICE", "connection", "show"},
 		  every = 5000 },
 
-		-- steady: a person drives these. Backing off would mean pressing the
-		-- volume key and waiting up to 32 s for the bar to notice. Both of
-		-- these are polls that should not exist at all: volume is a PipeWire
-		-- subscription, and /sys/class/backlight/*/brightness is watchable.
-		{ name = "audio", adapter = "lua/audio/pw.lua", steady = true,
+		-- throttle = false: a person drives these. Backing off would mean
+		-- pressing the volume key and waiting up to 32 s for the bar to
+		-- notice. Both of these are polls that should not exist at all:
+		-- volume is a PipeWire subscription, and
+		-- /sys/class/backlight/*/brightness is watchable.
+		{ name = "audio", adapter = "lua/audio/pw.lua", throttle = false,
 		  exec = {"pactl", "list", "short", "sinks"}, every = 2000 },
 
 		{ name = "backlight", adapter = "lua/backlight/brightnessctl.lua",
-		  steady = true, exec = {"brightnessctl", "-m"}, every = 2000 },
+		  throttle = false, exec = {"brightnessctl", "-m"}, every = 2000 },
 	},
 }

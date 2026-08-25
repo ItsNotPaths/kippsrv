@@ -40,12 +40,13 @@ run :: proc(l: ^Loop) {
 				if from_srv[i] {
 					srv_ready(l.srv, hit[i])
 				} else {
-					src_report(l.src, publish(l, src_ready(l.src, hit[i])))
+					publish(l, src_ready(l.src, hit[i]))
 				}
 			}
 		}
 		reap()
 		publish(l, src_tick(l.src, now_ms()))
+		src_settle(l.src)
 		for id in src_reap(l.src) {
 			for line in store_stale(l.store, id) do broadcast(l.srv, line)
 		}
@@ -60,17 +61,15 @@ run :: proc(l: ^Loop) {
 }
 
 // Everything a source produced goes through the store, which drops a repeat
-// and passes on a change. A consumer sees a line only when something moved.
+// and passes on a change. A consumer sees a line only when something moved,
+// and the source that moved it is credited, so a quiet one can back off.
 @(private = "file")
-publish :: proc(l: ^Loop, es: []Emit) -> int {
-	n := 0
+publish :: proc(l: ^Loop, es: []Emit) {
 	for e in es {
 		line := store_apply(l.store, e)
-		if line != "" {
-			broadcast(l.srv, line)
-			n += 1
-		}
+		if line == "" do continue
+		broadcast(l.srv, line)
+		src_moved(l.src, e.src)
 	}
-	return n
 }
 
