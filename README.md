@@ -3,7 +3,7 @@
 Desktop state on one socket.
 
 kippsrv reads every scattered source on the machine, normalizes what they say
-into one vocabulary, and publishes it as kipp. A window manager, bluez,
+into one vocabulary, and publishes it as [kipp](https://github.com/ItsNotPaths/kipp). A window manager, bluez,
 NetworkManager, PipeWire, the tray. One socket, one format, and a consumer that
 connects at any moment gets the whole truth before the changes.
 
@@ -405,7 +405,7 @@ Anything starting `config:` is yours to correct and names the key it expected.
 
 kippsrv implements kipp itself rather than vendoring it. The protocol is the
 contract, so two implementations that drift still interoperate, which an ABI
-does not. Readers written against the C implementation in the kipp repo talk to
+does not. Readers written against the C implementation in the [kipp repo](https://github.com/ItsNotPaths/kipp) talk to
 this one with no change.
 
 ## Build
