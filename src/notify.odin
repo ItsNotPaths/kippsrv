@@ -258,7 +258,7 @@ on_server_info :: proc "c" (m: ^BMsg, user: rawptr, err: rawptr) -> c.int {
 	if bus_message_new_method_return(m, &reply) < 0 do return -22
 	defer bus_message_unref(reply)
 
-	for s in ([]cstring{"kippsrv", "tildesh", "1", "1.2"}) {
+	for s in ([]cstring{"kippsrv", "kippsrv", "1", "1.2"}) {
 		bus_message_append_basic(reply, 's', rawptr(s))
 	}
 	bus_send(n.bus, reply, nil)
