@@ -49,17 +49,6 @@ cmd_bind :: proc(ss: ^Sources) {
 	outbound = ss
 }
 
-// SPEC.md names four. An adapter that invents a fifth would put a line on the
-// wire that no consumer can read, so the wire wins.
-@(private = "file")
-known :: proc(code: string) -> string {
-	switch code {
-	case "badcmd", "badarg", "nosrc", "toolong":
-		return code
-	}
-	return "badarg"
-}
-
 command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 	if outbound == nil {
 		send_error(s, fd, "nosrc", m.kind, "nothing is configured")
@@ -67,12 +56,12 @@ command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 	}
 
 	for src in outbound.list {
-		what := vm_command(outbound.vm, src.adapter, m)
+		what := vm_command(outbound.vm, src.adapter, m, src.name)
 		if what == nil do continue
 
 		switch v in what {
 		case Cmd_Fail:
-			send_error(s, fd, known(v.code), m.kind, v.msg)
+			send_error(s, fd, v.code, m.kind, v.msg)
 		case Cmd_Bytes:
 			if !src_send(src, transmute([]byte)v.data) {
 				send_error(s, fd, "nosrc", m.kind,

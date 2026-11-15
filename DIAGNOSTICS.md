@@ -29,6 +29,15 @@ k.emit("net", uuid, "name=home=wifi", "type=wifi") -- right
 
 An event is exempt. It is never stored, so it needs no identity.
 
+## E-word — an adapter produced a line that is not kipp
+
+That one line was dropped. Everything else is unaffected.
+
+*For the adapter's maintainer.* A kind and every attribute key are words of
+lowercase letters, digits and underscores, and never a number, as kipp's
+`SPEC.md` says. A reader takes anything else apart wrongly or not at all, so
+kippsrv keeps it off the socket. The message names the kind or key at fault.
+
 ## E-toolong — an adapter produced a fact over 1024 bytes
 
 That one fact was dropped. Everything else is unaffected.

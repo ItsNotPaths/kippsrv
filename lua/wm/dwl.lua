@@ -33,7 +33,7 @@ return {
 			end
 
 		elseif kind == "layout" then
-			k.emit("layout", mon, data)
+			k.emit("layout", mon, "name=" .. data)
 
 		elseif kind == "selmon" then
 			if data == "1" then k.emit("focus", mon) end

@@ -10,8 +10,8 @@
 # ...), is invisible here and to lint-core. The check is partial by
 # construction, and its job is to make the ordinary mistake visible in a diff.
 #
-# lua/<domain>/<impl>.lua may emit only the kinds in vocab/<domain>.txt. A new
-# kind is an edit to that file, which is a deliberate act. A domain with one
+# lua/<domain>/<impl>.lua keeps to the kinds in vocab/<domain>.txt, so two
+# adapters of one domain cannot drift apart unseen. A domain with one
 # implementation cannot drift, so the file is documentation. A domain with
 # several is where this earns its keep.
 set -u

@@ -47,6 +47,19 @@ is_cmd :: proc(m: ^Msg) -> bool {
 	return len(m.kind) > 0 && m.kind[0] >= 'A' && m.kind[0] <= 'Z'
 }
 
+// A kind or a key: lowercase letters, digits and underscores, never a number.
+is_word :: proc(s: string) -> bool {
+	number := true
+	for ch in transmute([]byte)s {
+		switch ch {
+		case 'a' ..= 'z', '_': number = false
+		case '0' ..= '9':
+		case: return false
+		}
+	}
+	return len(s) > 0 && !number
+}
+
 // --------------------------------------------------------------- building
 
 Out :: struct {

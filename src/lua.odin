@@ -106,13 +106,30 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 
 	v := vm_of(L)
 
+	// Only kipp reaches the socket. A kind or a key that is not a word would
+	// be a line no reader can take apart.
+	built, parsed := parse(line_of(&o), context.temp_allocator)
+	bad := built.kind
+	if parsed && is_word(bad) {
+		bad = ""
+		for key in built.attr do if !is_word(key) do bad = key
+	}
+	if !parsed || bad != "" {
+		fmt.eprintfln(
+`kippsrv: %s produced a line that is not kipp and it was dropped. This is a
+         bug in that adapter file, not in your configuration.
+         [E-word] %q is not a word of lowercase letters, digits and
+         underscores. See DIAGNOSTICS.md.`,
+			v.paths[v.running], bad)
+		return 0
+	}
+
 	// A stored fact needs a subject: that is its identity. A field holding
 	// '=' reads as the first attribute, so a subject that holds one leaves
 	// the fact keyed on its kind alone, colliding with every other fact of
 	// that kind. An event is never stored and needs no subject.
 	if kind != .Event && n >= 2 {
-		m, good := parse(line_of(&o), context.temp_allocator)
-		if good && len(m.subj) == 0 {
+		if len(built.subj) == 0 {
 			culprit := ""
 			for i in 2 ..= n {
 				f := string(lua.tostring(L, i))
@@ -128,7 +145,7 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
          maintains it, and quote this message.
          [E-subject] the field %q holds '=', so it read as an attribute and
          the fact kept no subject. See DIAGNOSTICS.md.`,
-				v.paths[v.running], m.kind, culprit)
+				v.paths[v.running], built.kind, culprit)
 			return 0
 		}
 	}
@@ -471,7 +488,10 @@ read_call :: proc(L: ^lua.State, at: c.int) -> Cmd_Call {
 //
 // The fence holds. The script names a call and never makes one, and the
 // descriptor the answer travels down is never in its reach.
-vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg) -> Cmd {
+//
+// The source's name goes along, because one adapter file can serve several
+// sources and a command may be meant for only one of them.
+vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
 	if a == NO_ADAPTER do return nil
 	clear(&v.emitted)
 
@@ -481,10 +501,11 @@ vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg) -> Cmd {
 		return nil          // an adapter need not take commands
 	}
 	push_msg(v.L, m)
+	lua.pushstring(v.L, cstr(source))
 
 	v.budget = SLICES
 	v.running = a
-	if lua.Status(lua.pcall(v.L, 1, 3, 0)) != .OK {
+	if lua.Status(lua.pcall(v.L, 2, 3, 0)) != .OK {
 		fail(v, "command")
 		lua.pop(v.L, 1)
 		return nil

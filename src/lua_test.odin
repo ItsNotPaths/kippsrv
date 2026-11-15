@@ -169,18 +169,18 @@ command_translates_for_its_own_source :: proc(t: ^testing.T) {
 	if !testing.expect(t, ok, "vm_load") do return
 
 	view, _ := parse("VIEW\t2", context.temp_allocator)
-	bytes, is_bytes := vm_command(v, a, &view).(Cmd_Bytes)
+	bytes, is_bytes := vm_command(v, a, &view, "wm").(Cmd_Bytes)
 	testing.expect(t, is_bytes, "VIEW answers with bytes")
 	testing.expect_value(t, bytes.data, "view\t2\n")
 
 	over, _ := parse("VIEW\t99", context.temp_allocator)
-	bad, is_bad := vm_command(v, a, &over).(Cmd_Fail)
+	bad, is_bad := vm_command(v, a, &over, "wm").(Cmd_Fail)
 	testing.expect(t, is_bad, "a tag out of range is refused")
 	testing.expect_value(t, bad.code, "badarg")
 
 	// Another adapter's verb. Nothing at all, so the next source is asked.
 	theirs, _ := parse("ACTIVATE\t:1.42/StatusNotifierItem", context.temp_allocator)
-	testing.expect(t, vm_command(v, a, &theirs) == nil, "not its command")
+	testing.expect(t, vm_command(v, a, &theirs, "wm") == nil, "not its command")
 }
 
 // The tray is the case that cannot be done any other way: the connection the
@@ -194,7 +194,7 @@ command_describes_a_call :: proc(t: ^testing.T) {
 
 	m, _ := parse("ACTIVATE\t:1.42/StatusNotifierItem\tx=10\ty=20",
 	              context.temp_allocator)
-	call, is_call := vm_command(v, a, &m).(Cmd_Call)
+	call, is_call := vm_command(v, a, &m, "tray").(Cmd_Call)
 	if !testing.expect(t, is_call, "ACTIVATE answers with a call") do return
 
 	testing.expect_value(t, call.dest, ":1.42")
@@ -204,4 +204,45 @@ command_describes_a_call :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(call.args), 2)
 	testing.expect_value(t, call.args[0], "10")
 	testing.expect_value(t, call.args[1], "20")
+}
+
+// A program that prints kipp needs no adapter of its own. Facts are stored,
+// a line marked event=1 is passed on without the mark, and a command goes
+// only to the source its prefix names.
+@(test)
+passthrough_carries_a_kipp_program :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+	a, ok := vm_load(v, "lua/kipp.lua")
+	if !testing.expect(t, ok, "vm_load") do return
+
+	fact := vm_feed(v, a, "win\t7\tws=1\tpos=2\ttitle=a=b")
+	testing.expect_value(t, len(fact), 1)
+	testing.expect_value(t, fact[0].kind, Emit_Kind.State)
+	testing.expect_value(t, fact[0].line, "win\t7\tws=1\tpos=2\ttitle=a=b")
+
+	event := vm_feed(v, a, "wm_done\tevent=1\tref=p17\tcmd=WM_LINE")
+	testing.expect_value(t, len(event), 1)
+	testing.expect_value(t, event[0].kind, Emit_Kind.Event)
+	testing.expect_value(t, event[0].line, "wm_done\tref=p17\tcmd=WM_LINE")
+
+	testing.expect_value(t, len(vm_feed(v, a, "sync\tstate")), 0)
+
+	line, _ := parse("WM_LINE\tref=p17", context.temp_allocator)
+	bytes, is_bytes := vm_command(v, a, &line, "wm").(Cmd_Bytes)
+	testing.expect(t, is_bytes, "its own prefix")
+	testing.expect_value(t, bytes.data, "WM_LINE\tref=p17\n")
+	testing.expect(t, vm_command(v, a, &line, "media") == nil, "another source's prefix")
+}
+
+// Only kipp reaches the socket.
+@(test)
+a_kind_or_key_that_is_not_a_word_is_refused :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+
+	testing.expect(t, vm_eval(v, `k.emit("Win", "7")`))
+	testing.expect(t, vm_eval(v, `k.emit("42", "7")`))
+	testing.expect(t, vm_eval(v, `k.event("key", "super+a", "Bad Key=1")`))
+	testing.expect_value(t, len(v.emitted), 0)
 }
