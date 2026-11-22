@@ -25,6 +25,7 @@ drain :: proc(ss: ^Sources, budget := 200) -> []string {
 	return out[:]
 }
 
+// A blank line is skipped, not an empty unit that stops the source.
 @(test)
 exec_source_splits_lines :: proc(t: ^testing.T) {
 	v, _ := vm_open()
@@ -36,13 +37,14 @@ exec_source_splits_lines :: proc(t: ^testing.T) {
 	if !testing.expect(t, ok) do return
 
 	_, spawned := src_exec(&ss, "printf",
-	                       {"printf", "focus eDP-1 3\nfocus HDMI-A-1 9\n"}, a)
+	                       {"printf", "focus eDP-1 3\n\n\nfocus HDMI-A-1 9\n"}, a)
 	if !testing.expect(t, spawned, "src_exec") do return
 
 	out := drain(&ss)
 	fmt.printfln("\n--- exec, lines -> %d", len(out))
 	for l in out do fmt.printfln("    %s", l)
 	testing.expect_value(t, len(out), 4)
+	testing.expect(t, !ss.list[0].dead, "a blank line must not stop the source")
 }
 
 // The last record of a multi-line format has no terminator. EOF is the

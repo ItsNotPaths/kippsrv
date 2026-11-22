@@ -70,9 +70,14 @@ Source :: struct {
 	done:    bool,       // ended for now
 	fails:   int,        // respawns in a row that did not start
 	dead:    bool,       // gone, until a restart works
-	status:  string,     // what status/<name> last said
+	said:    Status,     // what status/<name> last said
 	bus:     ^Bus,       // dbus only
 }
+
+Status :: enum {Unsaid, Online, Offline}
+
+@(private = "file", rodata)
+STATUS_WORD := [Status]string{.Unsaid = "", .Online = "online", .Offline = "offline"}
 
 Sources :: struct {
 	vm:      ^Vm,
@@ -103,6 +108,7 @@ THROTTLE :: Throttle{idle = 3, factor = 16, ceiling = 60_000, min_gap = 0}
 
 // A polling source forks once a period. Without this the process table fills
 // and fork eventually fails for the whole session.
+// (hole exec-fail :tags sources :sev gap) the exit status is dropped, so an exec that fails (127) reads as a normal end and its source never goes offline.
 reap :: proc() {
 	for {
 		st: c.int
@@ -340,6 +346,12 @@ src_close :: proc(ss: ^Sources) {
 take :: proc(s: ^Source) -> ([]byte, bool) {
 	switch f in s.framing {
 	case Lines:
+		blank := 0      // a blank line carries nothing
+		for blank < len(s.buf) && s.buf[blank] == '\n' do blank += 1
+		if blank > 0 {
+			copy(s.buf[:], s.buf[blank:])
+			resize(&s.buf, len(s.buf) - blank)
+		}
 		for b, i in s.buf {
 			if b == '\n' {
 				unit := s.buf[:i]
@@ -617,12 +629,13 @@ src_settle :: proc(ss: ^Sources) {
 src_status :: proc(ss: ^Sources) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {
-		state := "offline" if s.dead else "online"
+		now := Status.Offline if s.dead else .Online
+		if s.said == now do continue
 		topic := fmt.tprintf("status/%s", s.name)
-		if s.status == state || !is_topic(topic) do continue
-		s.status = state
+		if !is_topic(topic) do continue
+		s.said = now
 		// (hole status-claim :tags broker :needs claims) names no claim; v2 adds retains=<pattern>, so a reader matches its own topics against it.
-		append(&out, Emit{fmt.tprintf("retain\t%s\tstate=%s", topic, state), 0})
+		append(&out, Emit{fmt.tprintf("retain\t%s\tstate=%s", topic, STATUS_WORD[now]), 0})
 	}
 	return out[:]
 }
