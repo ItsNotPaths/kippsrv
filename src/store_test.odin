@@ -112,36 +112,3 @@ the_projection_lands_atomically :: proc(t: ^testing.T) {
 	testing.expect(t, again != nil, "a clean store writes nothing")
 
 }
-
-// A source that dies leaves last-known facts, not a lie. A headphone still
-// exists after bluez stops answering, so the fact is marked rather than
-// removed, and a consumer can grey it out.
-@(test)
-a_dead_source_leaves_stale_facts :: proc(t: ^testing.T) {
-	st: Store
-	defer store_close(&st)
-
-	store_apply(&st, Emit{"retain\tbt/00:11\tname=Buds\tstate=connected", 7})
-	store_apply(&st, Emit{"retain\tnet/wlp4s0\tstate=up", 9})
-
-	out := store_stale(&st, 7)
-	testing.expect_value(t, len(out), 1)
-	if len(out) == 1 do testing.expect_value(t, out[0], "stale\tbt/00:11")
-
-	// only that source, and only once
-	testing.expect_value(t, len(store_stale(&st, 7)), 0)
-
-	// the dump carries the fact and its mark, so a late consumer knows too
-	lines := make([dynamic]string, context.temp_allocator)
-	store_each(&st, &lines)
-	testing.expect_value(t, len(lines), 3)
-
-	// the source comes back, and the return is news even though the value
-	// did not change
-	back := store_apply(&st, Emit{"retain\tbt/00:11\tname=Buds\tstate=connected", 7})
-	testing.expect_value(t, back, "retain\tbt/00:11\tname=Buds\tstate=connected")
-
-	lines2 := make([dynamic]string, context.temp_allocator)
-	store_each(&st, &lines2)
-	testing.expect_value(t, len(lines2), 2)   // the mark is gone
-}

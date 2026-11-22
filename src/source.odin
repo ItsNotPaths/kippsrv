@@ -69,8 +69,8 @@ Source :: struct {
 	due:     i64,        // next fire on the monotonic clock
 	done:    bool,       // ended for now
 	fails:   int,        // respawns in a row that did not start
-	dead:    bool,       // gone for good. Its facts are stale
-	reaped:  bool,       // the store has been told
+	dead:    bool,       // gone, until a restart works
+	status:  string,     // what status/<name> last said
 	bus:     ^Bus,       // dbus only
 }
 
@@ -612,14 +612,17 @@ src_settle :: proc(ss: ^Sources) {
 	}
 }
 
-// Sources that died since the last pass, so the store can mark their facts.
-src_reap :: proc(ss: ^Sources) -> []int {
-	out := make([dynamic]int, context.temp_allocator)
+// The status/<name> lines that changed since the last pass. A dead source is
+// offline, so a reader knows its facts are last-known.
+src_status :: proc(ss: ^Sources) -> []Emit {
+	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {
-		if s.dead && !s.reaped {
-			s.reaped = true
-			append(&out, s.id)
-		}
+		state := "offline" if s.dead else "online"
+		topic := fmt.tprintf("status/%s", s.name)
+		if s.status == state || !is_topic(topic) do continue
+		s.status = state
+		// (hole status-claim :tags broker :needs claims) names no claim; v2 adds retains=<pattern>, so a reader matches its own topics against it.
+		append(&out, Emit{fmt.tprintf("retain\t%s\tstate=%s", topic, state), 0})
 	}
 	return out[:]
 }
@@ -642,7 +645,7 @@ src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 			s.settled = false
 			emit_into(&out, vm_call(ss.vm, s.adapter, "tick"), s.id)
 		case s.done && s.every > 0:
-			// `dead` means the facts are stale. It does not mean stop
+			// `dead` means the source is offline. It does not mean stop
 			// trying. A socket keeps dialling, because whatever served it
 			// can come back at any moment. An exec that will not start three
 			// times running has nothing left to say.
@@ -651,7 +654,6 @@ src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 			if s.kind == .Sock ? redial(s) : respawn(s) {
 				s.fails = 0
 				s.dead = false
-				s.reaped = false     // so a later death marks its facts again
 			} else {
 				s.fails += 1
 				s.due = now + s.every

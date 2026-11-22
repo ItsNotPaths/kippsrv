@@ -64,6 +64,8 @@ subscribe	layout/*
 '
 want_none only_match '^retain	tag/'           'subscribe	layout/*
 '
+want status     'retain	status/wm	state=online' 'subscribe	status/*
+'
 want no_forgery 'error	noconnect'             'retain	tag/0/9	state=focused
 '
 want no_verb    'error	badverb	verb=TAG'      'TAG	9

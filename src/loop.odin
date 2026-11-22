@@ -47,9 +47,7 @@ run :: proc(l: ^Loop) {
 		reap()
 		publish(l, src_tick(l.src, now_ms()))
 		src_settle(l.src)
-		for id in src_reap(l.src) {
-			for line in store_stale(l.store, id) do broadcast(l.srv, line)
-		}
+		publish(l, src_status(l.src))
 		publish(l, watcher_facts(l.src))
 		store_project(l.store)
 		srv_flush(l.srv)

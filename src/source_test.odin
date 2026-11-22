@@ -215,3 +215,48 @@ a_running_source_has_no_deadline :: proc(t: ^testing.T) {
 	gap := src_timeout(&ss, now_ms())
 	testing.expect(t, gap >= 0 && gap <= 20, "a held unit is due")
 }
+
+// A source that cannot be reached says so once on status/<name>, so a reader
+// knows its facts are last-known, and says online again when it comes back.
+@(test)
+a_lost_source_goes_offline :: proc(t: ^testing.T) {
+	path := "/tmp/kippsrv-lost.sock"
+	srv, ok := serve(path, "version\t2\tbroker=test")
+	if !testing.expect(t, ok) do return
+
+	v, _ := vm_open()
+	defer vm_close(v)
+	ss := Sources{vm = v}
+	defer src_close(&ss)
+	_, dialled := src_sock(&ss, "lost", path, NO_ADAPTER)
+	if !testing.expect(t, dialled) do return
+
+	status :: proc(ss: ^Sources) -> []string {
+		out := make([dynamic]string, context.temp_allocator)
+		for e in src_status(ss) do append(&out, e.line)
+		return out[:]
+	}
+	first := status(&ss)
+	testing.expect_value(t, len(first), 1)
+	if len(first) == 1 do testing.expect_value(t, first[0], "retain\tstatus/lost\tstate=online")
+	testing.expect_value(t, len(status(&ss)), 0)
+
+	stop(srv)
+	drain(&ss)
+	later := now_ms()
+	for _ in 0 ..< 3 {
+		later += 1_000_000
+		src_tick(&ss, later)          // each redial finds nothing
+	}
+	gone := status(&ss)
+	testing.expect_value(t, len(gone), 1)
+	if len(gone) == 1 do testing.expect_value(t, gone[0], "retain\tstatus/lost\tstate=offline")
+	testing.expect_value(t, len(status(&ss)), 0)
+
+	back, _ := serve(path, "version\t2\tbroker=test")
+	defer stop(back)
+	src_tick(&ss, later + 1_000_000)
+	again := status(&ss)
+	testing.expect_value(t, len(again), 1)
+	if len(again) == 1 do testing.expect_value(t, again[0], "retain\tstatus/lost\tstate=online")
+}

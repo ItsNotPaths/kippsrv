@@ -8,19 +8,13 @@ package kippsrv
 import "core:fmt"
 import "core:strings"
 
-Fact :: struct {
-	line:  string,
-	src:   int,    // which source produced it, so its death can be answered
-	stale: bool,   // the source is gone. This is last-known, not current
-}
-
 // An adapter that keys on something unbounded would otherwise grow the store
 // until the daemon is killed. vocab/wm.txt warns against it; this bounds it.
 MAX_FACTS    :: 4096
 PROJECT_MS   :: 250    // shortest gap between two writes of the state file
 
 Store :: struct {
-	facts: map[string]Fact,
+	facts: map[string]string,   // topic to its retain line
 	order: [dynamic]string,     // keys in the order first seen, so a dump is stable
 	path:  string,              // the state file, or "" for none
 	dirty: bool,
@@ -29,9 +23,9 @@ Store :: struct {
 }
 
 store_close :: proc(st: ^Store) {
-	for k, v in st.facts {
+	for k, line in st.facts {
 		delete(k)
-		delete(v.line)
+		delete(line)
 	}
 	delete(st.facts)
 	delete(st.order)
@@ -55,7 +49,7 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 		for o, i in st.order {
 			if o == k {
 				delete_key(&st.facts, k)
-				delete(old.line)
+				delete(old)
 				delete(o)
 				ordered_remove(&st.order, i)
 				break
@@ -66,11 +60,9 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 	}
 
 	if old, had := st.facts[k]; had {
-		// A repeat is silence, unless the fact was stale: then its return is
-		// news, because a consumer is showing it greyed out.
-		if old.line == e.line && !old.stale do return ""
-		delete(old.line)
-		st.facts[k] = {strings.clone(e.line), e.src, false}
+		if old == e.line do return ""   // a repeat is silence
+		delete(old)
+		st.facts[k] = strings.clone(e.line)
 	} else {
 		if len(st.order) >= MAX_FACTS {
 			if !st.full {
@@ -84,7 +76,7 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 			return ""
 		}
 		owned := strings.clone(k)
-		st.facts[owned] = {strings.clone(e.line), e.src, false}
+		st.facts[owned] = strings.clone(e.line)
 		append(&st.order, owned)
 	}
 	st.dirty = true
@@ -93,39 +85,7 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 
 // Everything true right now, in the order it was first seen.
 store_each :: proc(st: ^Store, out: ^[dynamic]string) {
-	for k in st.order {
-		f, ok := st.facts[k]
-		if !ok do continue
-		append(out, f.line)
-		if f.stale do append(out, stale_line(k))
-	}
-}
-
-@(private = "file")
-stale_line :: proc(key: string) -> string {
-	o: Out
-	begin(&o, "stale")
-	for f in strings.split(key, "\t", context.temp_allocator) do add(&o, "%s", f)
-	line, ok := str(&o)
-	return ok ? strings.clone(line, context.temp_allocator) : ""
-}
-
-// A source died. Its facts are last-known, not gone: the headphone still
-// exists, we just cannot see it.
-// (hole status-topic :tags broker) marks each fact of a dead source stale; proposed v2: retain status/<source> state=offline.
-store_stale :: proc(st: ^Store, src: int) -> []string {
-	out := make([dynamic]string, context.temp_allocator)
-	if src == 0 do return out[:]
-
-	for k in st.order {
-		f, ok := st.facts[k]
-		if !ok || f.src != src || f.stale do continue
-		f.stale = true
-		st.facts[k] = f
-		st.dirty = true
-		if line := stale_line(k); line != "" do append(&out, line)
-	}
-	return out[:]
+	for k in st.order do append(out, st.facts[k])
 }
 
 // The projection. A script or a popup that will not hold a connection reads
@@ -142,14 +102,8 @@ store_project :: proc(st: ^Store) {
 
 	b := strings.builder_make(context.temp_allocator)
 	for k in st.order {
-		f, ok := st.facts[k]
-		if !ok do continue
-		strings.write_string(&b, f.line)
+		strings.write_string(&b, st.facts[k])
 		strings.write_byte(&b, '\n')
-		if f.stale {
-			strings.write_string(&b, stale_line(k))
-			strings.write_byte(&b, '\n')
-		}
 	}
 	text := strings.to_string(b)
 	write_atomic(st.path, transmute([]byte)text)
