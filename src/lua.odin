@@ -361,6 +361,8 @@ vm_load :: proc(v: ^Vm, path: string) -> (a: Adapter, ok: bool) {
 
 vm_unload :: proc(v: ^Vm, a: Adapter) {
 	lua.L_unref(v.L, lua.REGISTRYINDEX, c.int(a))
+	_, path := delete_key(&v.paths, a)   // the ref is reused by the next load
+	delete(path)
 }
 
 // Call one function on an adapter and take back the facts it produced. The
