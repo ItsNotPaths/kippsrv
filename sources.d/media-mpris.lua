@@ -1,4 +1,4 @@
--- MPRIS. One file, two ways in: a poll of `busctl ... GetAll`, or a live
+-- MPRIS. One file, two ways in: a GetAll of each player at start, or a live
 -- PropertiesChanged signal from kippbus match. Both arrive as the JSON busctl
 -- prints, so neither needs its own adapter.
 --
@@ -7,6 +7,12 @@
 source { name = "media", retains = "media/*",
          exec = [[kippbus match "type='signal',interface='org.freedesktop.DBus.Properties',]] ..
                 [[member='PropertiesChanged',path='/org/mpris/MediaPlayer2'"]] }
+-- GetAll's reply has no sender, so the shell wraps it with the player's name.
+source { name = "media-seed", retains = "media/*",
+         exec = [[for name in $(busctl --user --no-legend list | awk '$1 ~ /^org\.mpris\.MediaPlayer2\./ {print $1}'); do ]] ..
+                [[printf '{"sender":"%s","reply":%s}\n' "$name" ]] ..
+                [["$(busctl --user --json=short call "$name" /org/mpris/MediaPlayer2 ]] ..
+                [[org.freedesktop.DBus.Properties GetAll s org.mpris.MediaPlayer2.Player)"; done]] }
 
 local function value(wrapped)
 	return wrapped and wrapped.data
@@ -58,8 +64,8 @@ function feed(line)
 		local interface = body and body[1] and body[1].data
 		if interface ~= "org.mpris.MediaPlayer2.Player" then return end
 		publish(value(body[2]) or {}, message.sender)
-	elseif message.data then
-		-- (hole media-seed :tags lua :sev gap) no source polls GetAll, so a player already playing shows nothing until it changes.
-		publish(message.data[1] or {}, "player")
+	elseif message.reply then
+		local properties = value(message.reply)
+		publish(properties and properties[1] or {}, message.sender)
 	end
 end
