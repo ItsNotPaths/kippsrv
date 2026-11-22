@@ -1,11 +1,6 @@
--- (hole passthrough) hedl speaks kipp already; a source file with no feed replaces this.
--- hedl speaks kipp already (its D13), so there is nothing to translate. This
--- file exists because kippsrv wants an adapter for every source, not because
--- the format needs one. It splits the line and hands the fields straight to
--- k.emit.
---
--- If this file ever grows a rule, the two formats have drifted, and the fix is
--- the format rather than the adapter.
+-- hedl speaks kipp already (its D13), so this file has no feed and its lines
+-- pass straight through. If it ever needs one, the two formats have drifted,
+-- and the fix is the format rather than the adapter.
 
 -- Going the other way is a translation, because hedl takes the action names
 -- its own key table uses, one to a line, on its stdin.
@@ -32,15 +27,6 @@ local actions = {
 	reload     = {"reload"},
 	quit       = {"quit"},
 }
-
-function feed(line)
-	local f = {}
-	for field in line:gmatch("[^\t]+") do f[#f + 1] = field end
-	if #f < 2 then return end        -- version and sync carry no fact
-	local kind = table.remove(f, 1)
-	if kind == "version" or kind == "sync" then return end
-	k.emit(kind, table.unpack(f))
-end
 
 -- publish wm/request action=view tag=2. A payload value cannot hold a tab or
 -- a newline, so the argument goes out as it arrived.

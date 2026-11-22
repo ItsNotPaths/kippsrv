@@ -3,5 +3,5 @@
 local n = 0
 function tick()
 	n = n + 1
-	k.event("beat", "test", "count=" .. n)
+	k.publish("beat/test", "count=" .. n)
 end

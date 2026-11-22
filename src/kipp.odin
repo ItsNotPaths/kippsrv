@@ -85,6 +85,12 @@ is_word :: proc(s: string) -> bool {
 	return len(s) > 0 && !number
 }
 
+// A payload field: key=value, the key a word.
+is_field :: proc(field: string) -> bool {
+	key, equals, _ := strings.partition(field, "=")
+	return equals != "" && is_word(key)
+}
+
 // Temp-allocated, so it dies with the loop pass like everything else.
 cstr :: proc(s: string) -> cstring {
 	return strings.clone_to_cstring(s, context.temp_allocator)

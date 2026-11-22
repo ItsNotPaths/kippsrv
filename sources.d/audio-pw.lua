@@ -1,4 +1,4 @@
--- (hole adapters-v2 :tags lua :needs (lua-surface)) emits v1 kinds.
+-- (hole adapters-v2 :tags lua) emits v1 kinds.
 -- pactl list short: already tab separated. The adapter only renames and
 -- reorders, which is what an adapter looks like when the source got it right.
 -- throttle = false: a person drives this. Backing off would mean pressing the

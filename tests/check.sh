@@ -76,7 +76,7 @@ SOCK=$TOP/run/kippsrv.sock
 # The source ends long before the consumer connects. Everything the consumer
 # sees comes out of the store.
 adapter wm-dwl.lua 'source { name = "wm", exec = "cat tests/fmt/dwl.txt",
-         retains = {"tag/*", "focus/*", "layout/*", "title/*", "app/*"} }' > "$SYSTEM/wm-dwl.lua"
+         retains = {"tag/*", "focus", "layout/*", "title/*", "app/*"} }' > "$SYSTEM/wm-dwl.lua"
 
 # A claim overlapping one already loaded refuses its file, and so does a taken
 # name. Files load in name order, so a-owner is first.
@@ -98,14 +98,14 @@ function request(m)
 end
 function feed(line)
 	local word = line:match("^echo (%S+)$")
-	if word then k.emit("echo", word, "seen=1") end
+	if word then k.retain("echo/" .. word, "seen=1") end
 end
 EOF2
 
 # A retain outside the source's claim is dropped.
 cat > "$SYSTEM/e-stray.lua" <<'EOF2'
 source { name = "stray", exec = "echo go", retains = {"y/*"} }
-function feed(line) k.emit("z", "1", "a=b") end
+function feed(line) k.retain("z/1", "a=b") end
 EOF2
 
 start "$TOP"
@@ -122,7 +122,7 @@ subscribe	layout/*
 '
 want_none only_match '^retain	tag/'           'subscribe	layout/*
 '
-want status     'retain	status/wm	state=online	retains=tag/\*,focus/\*' 'subscribe	status/*
+want status     'retain	status/wm	state=online	retains=tag/\*,focus,' 'subscribe	status/*
 '
 if printf 'subscribe\t*\n' | timeout 2 socat -t1 - UNIX-CONNECT:"$SOCK" 2>/dev/null |
    grep -q 'error	noconnect'; then

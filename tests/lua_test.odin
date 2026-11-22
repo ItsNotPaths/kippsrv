@@ -23,23 +23,27 @@ sandbox_is_closed :: proc(t: ^testing.T) {
 }
 
 @(test)
-emit_joins_fields :: proc(t: ^testing.T) {
+retain_and_publish_build_lines :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()
 	defer kippsrv.vm_close(v)
 
-	testing.expect(t, kippsrv.vm_eval(v, `k.emit("tag", "eDP-1", "2", "state=focused")`))
-	testing.expect_value(t, len(v.emitted), 1)
+	testing.expect(t, kippsrv.vm_eval(v, `
+		k.retain("tag/eDP-1/2", "state=focused")
+		k.publish("win_close/0x1")
+	`))
+	testing.expect_value(t, len(v.emitted), 2)
 	testing.expect_value(t, v.emitted[0].line, "retain\ttag/eDP-1/2\tstate=focused")
+	testing.expect_value(t, v.emitted[1].line, "publish\twin_close/0x1")
 }
 
 // A script hands over fields, never a line. So it cannot forge a second fact
 // by putting a tab or a newline in a value.
 @(test)
-emit_cannot_forge_a_line :: proc(t: ^testing.T) {
+retain_cannot_forge_a_line :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()
 	defer kippsrv.vm_close(v)
 
-	testing.expect(t, kippsrv.vm_eval(v, `k.emit("title", "0x1", "t=a\tb\nfocus\tHDMI-1")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("title/0x1", "t=a\tb\nfocus\tHDMI-1")`))
 	testing.expect_value(t, len(v.emitted), 1)
 	testing.expect_value(t, v.emitted[0].line, "retain\ttitle/0x1\tt=abfocusHDMI-1")
 }
@@ -84,7 +88,7 @@ adapter_turns_a_foreign_line_into_facts :: proc(t: ^testing.T) {
 
 	out := kippsrv.vm_feed(v, a, "focus eDP-1 3")
 	testing.expect_value(t, len(out), 2)
-	testing.expect_value(t, out[0].line, "retain\tfocus/eDP-1")
+	testing.expect_value(t, out[0].line, "retain\tfocus\tmon=eDP-1")
 	testing.expect_value(t, out[1].line, "retain\ttag/eDP-1/3\tstate=focused,occupied")
 
 	// a line the adapter does not understand produces nothing
@@ -115,7 +119,7 @@ a_runaway_script_is_stopped :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(out), 0)
 
 	// and the VM still works afterwards
-	testing.expect(t, kippsrv.vm_eval(v, `k.emit("after", "ok")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.publish("after")`))
 	testing.expect_value(t, len(v.emitted), 1)
 }
 
@@ -132,24 +136,22 @@ a_greedy_script_is_stopped :: proc(t: ^testing.T) {
 	testing.expect(t, v.mem.used < kippsrv.MEM_CAP, "the cap held")
 
 	// and the VM still works afterwards
-	testing.expect(t, kippsrv.vm_eval(v, `k.emit("after", "ok")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.publish("after")`))
 	testing.expect_value(t, len(v.emitted), 1)
 	testing.expect(t, v.mem.used < before + (1 << 20), "the memory came back")
 }
 
-// A subject holding '=' reads as the first attribute, so the fact keeps no
-// subject and keys on its kind alone. That would overwrite every other fact
-// of that kind, so it is refused rather than stored.
+// A field with no '=' is not kipp, and a writer must refuse it. Only the first
+// '=' separates, so a value may hold more.
 @(test)
-a_subject_holding_equals_is_refused :: proc(t: ^testing.T) {
+a_field_with_no_equals_is_refused :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()
 	defer kippsrv.vm_close(v)
 
-	testing.expect(t, kippsrv.vm_eval(v, `k.emit("net", "home=wifi", "type=wifi")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("net/uuid-1", "home")`))
 	testing.expect_value(t, len(v.emitted), 0)
 
-	// the same name is fine in an attribute: only the first '=' separates
-	testing.expect(t, kippsrv.vm_eval(v, `k.emit("net", "uuid-1", "name=home=wifi")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("net/uuid-1", "name=home=wifi")`))
 	testing.expect_value(t, len(v.emitted), 1)
 	if len(v.emitted) == 1 {
 		m, ok := kippsrv.parse(v.emitted[0].line, context.temp_allocator)
@@ -159,34 +161,36 @@ a_subject_holding_equals_is_refused :: proc(t: ^testing.T) {
 	}
 }
 
-// A program that prints kipp needs no adapter of its own. Facts are stored,
-// and a line marked event=1 is passed on without the mark.
+// A program that prints kipp needs no feed. Its retain and publish lines pass
+// through, and the rest of its session does not.
 @(test)
-passthrough_carries_a_kipp_program :: proc(t: ^testing.T) {
+a_file_with_no_feed_passes_kipp_through :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()
 	defer kippsrv.vm_close(v)
-	a, ok := kippsrv.vm_load(v, "sources.d/kipp.lua")
+	a, ok := kippsrv.vm_load(v, "sources.d/wm-hedl.lua")
 	if !testing.expect(t, ok, "vm_load") do return
 
-	fact := kippsrv.vm_feed(v, a, "win\t7\tws=1\tpos=2\ttitle=a=b")
-	testing.expect_value(t, len(fact), 1)
-	testing.expect_value(t, fact[0].line, "retain\twin/7\tws=1\tpos=2\ttitle=a=b")
+	retain := kippsrv.vm_feed(v, a, "retain\twin/7\tws=1\ttitle=a=b")
+	testing.expect_value(t, len(retain), 1)
+	testing.expect_value(t, retain[0].line, "retain\twin/7\tws=1\ttitle=a=b")
 
-	event := kippsrv.vm_feed(v, a, "wm_done\tevent=1\tref=p17\tcmd=WM_LINE")
-	testing.expect_value(t, len(event), 1)
-	testing.expect_value(t, event[0].line, "publish\twm_done\tref=p17\tcmd=WM_LINE")
+	publish := kippsrv.vm_feed(v, a, "publish\twm_done\tref=p17")
+	testing.expect_value(t, len(publish), 1)
+	testing.expect_value(t, publish[0].line, "publish\twm_done\tref=p17")
 
 	testing.expect_value(t, len(kippsrv.vm_feed(v, a, "sync\tstate")), 0)
+	testing.expect_value(t, len(kippsrv.vm_feed(v, a, "retain\twin/7\tbare")), 0)
 }
 
 // Only kipp reaches the socket.
 @(test)
-a_kind_or_key_that_is_not_a_word_is_refused :: proc(t: ^testing.T) {
+a_bad_topic_or_key_is_refused :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()
 	defer kippsrv.vm_close(v)
 
-	testing.expect(t, kippsrv.vm_eval(v, `k.emit("Win", "7")`))
-	testing.expect(t, kippsrv.vm_eval(v, `k.emit("42", "7")`))
-	testing.expect(t, kippsrv.vm_eval(v, `k.event("key", "super+a", "Bad Key=1")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("Win/7")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("42/7")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("tag/*")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.publish("key/super+a", "Bad Key=1")`))
 	testing.expect_value(t, len(v.emitted), 0)
 }

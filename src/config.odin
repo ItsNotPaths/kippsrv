@@ -312,7 +312,7 @@ config_start :: proc(ss: ^Sources, cfg: ^Config) -> int {
 			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.every)
 		case spec.sock != "":
 			src, ok = src_sock(ss, spec.name, spec.sock, a)
-		// (hole drop-sdbus :tags bus :needs (kippbus-match kippbus-tray kippbus-notify passthrough)) kippsrv opens D-Bus itself; v2 runs kippbus as an exec source.
+		// (hole drop-sdbus :tags bus :needs (kippbus-match kippbus-tray kippbus-notify)) kippsrv opens D-Bus itself; v2 runs kippbus as an exec source.
 		case len(spec.dbus) > 0 || spec.watcher || spec.notify:
 			src, ok = dbus_open(ss, spec.name, spec.system, spec.dbus, a)
 			if ok && spec.watcher {

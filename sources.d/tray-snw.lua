@@ -26,10 +26,10 @@ function feed(line)
 	if not m then return end
 
 	for _, it in ipairs(m.dropped or {}) do
-		k.drop("tray", it)
+		k.retain("tray/" .. it)
 	end
 	for _, it in ipairs(m.items or {}) do
-		k.emit("tray", it, "state=registered")
+		k.retain("tray/" .. it, "state=registered")
 	end
 end
 

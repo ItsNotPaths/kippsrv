@@ -35,11 +35,11 @@ function feed(line)
 	-- A closed notification is gone, not stale. Say so, or the store
 	-- keeps handing out the last thing anybody knew about it.
 	for _, id in ipairs(m.dropped or {}) do
-		k.drop("notif", tostring(id))
+		k.retain("notif/" .. id)
 	end
 
 	for _, one in ipairs(m.live or {}) do
-		k.emit("notif", tostring(one.id),
+		k.retain("notif/" .. one.id,
 		       "app=" .. (one.app or ""),
 		       "summary=" .. (one.summary or ""),
 		       "body=" .. (one.body or ""),

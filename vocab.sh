@@ -6,7 +6,7 @@
 # Nothing at runtime consults these files: the daemon has no vocabulary in it,
 # and an unlisted kind reaches a consumer untouched.
 #
-# It matches quoted literals only. A kind built at run time, k.emit(kind_var,
+# It matches quoted literals only. A kind built at run time, k.retain(kind_var,
 # ...), is invisible here and to lint-core. The check is partial by
 # construction, and its job is to make the ordinary mistake visible in a diff.
 #
@@ -32,8 +32,8 @@ for f in sources.d/*-*.lua; do
 	fi
 	allowed=$(sed 's/#.*//' "$vocab" | tr -d ' \t' | grep -v '^$' | sort -u)
 
-	for kind in $(grep -oE 'k\.(emit|event|drop)\("[a-z_]+"' "$f" |
-	              sed 's/.*"\(.*\)"/\1/' | sort -u); do
+	for kind in $(grep -oE 'k\.(retain|publish)\("[a-z_]+' "$f" |
+	              sed 's/.*"//' | sort -u); do
 		if ! printf '%s\n' "$allowed" | grep -qx "$kind"; then
 			echo "FAIL  $f emits '$kind', not in $vocab"
 			fail=$((fail + 1))

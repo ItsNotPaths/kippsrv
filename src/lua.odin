@@ -13,14 +13,6 @@ import "core:fmt"
 import "core:strings"
 import lua "vendor:lua/5.4"
 
-// Which k call built a line: a fact, an event, or a fact that is gone.
-@(private = "file")
-Emit_Kind :: enum {
-	State,
-	Event,
-	Drop,
-}
-
 Emit :: struct {
 	line: string,
 	src:  int,      // which source produced it. 0 is none
@@ -90,109 +82,62 @@ vm_of :: proc "contextless" (L: ^lua.State) -> ^Vm {
 
 // ------------------------------------------------------------------- api
 
+// Build one line from its fields and keep it. Only kipp reaches the socket: a
+// field cannot carry a tab or a newline, and a bad topic or field would make a
+// line no reader can take apart.
 @(private = "file")
-build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
-	n := lua.gettop(L)
-	if n < 1 do return 0
-
-	// (hole lua-surface) the subject fields join the kind into the topic; v2 takes the topic whole.
-	topic := strings.builder_make(context.temp_allocator)
-	strings.write_string(&topic, string(lua.L_checkstring(L, 1)))
-	payload := make([dynamic]string, context.temp_allocator)
-	for i in 2 ..= n {
-		field := string(lua.tostring(L, i))
-		if strings.index_byte(field, '=') >= 0 {
-			append(&payload, field)
-		} else {
-			strings.write_byte(&topic, '/')
-			strings.write_string(&topic, field)
-		}
-	}
-
-	o: Out
-	begin(&o, "publish" if kind == .Event else "retain")
-	add(&o, "%s", strings.to_string(topic))
-	if kind != .Drop do for field in payload do add(&o, "%s", field)
-
-	v := vm_of(L)
-
-	// Only kipp reaches the socket. A topic or a key that breaks the rules
-	// would be a line no reader can take apart.
-	built, _ := parse(line_of(&o), context.temp_allocator)
-	bad := ""
-	if !is_topic(built.topic) do bad = built.topic
-	for key in built.payload do if !is_word(key) do bad = key
+keep :: proc(v: ^Vm, verb, topic: string, payload: []string) {
+	bad := "" if is_topic(topic) else topic
+	for field in payload do if !is_field(field) do bad = field
 	if bad != "" {
 		fmt.eprintfln(
 `kippsrv: %s produced a line that is not kipp and it was dropped. This is a
          bug in that adapter file, not in your configuration.
          [E-word] %q is not a topic whose kind is a word of lowercase
-         letters, digits and underscores, or not such a key. See
-         DIAGNOSTICS.md.`,
+         letters, digits and underscores, or not a key=value field whose key
+         is such a word. See DIAGNOSTICS.md.`,
 			v.paths[v.running], bad)
-		return 0
+		return
 	}
 
-	// A stored fact needs a subject: that is its identity. A field holding
-	// '=' reads as the first attribute, so a subject that holds one leaves
-	// the fact keyed on its kind alone, colliding with every other fact of
-	// that kind. An event is never stored and needs no subject.
-	// (hole lua-surface) the subject check goes; a topic is one field.
-	if kind != .Event && n >= 2 {
-		if !strings.contains_rune(built.topic, '/') {
-			culprit := ""
-			for i in 2 ..= n {
-				f := string(lua.tostring(L, i))
-				if strings.contains(f, "=") {
-					culprit = f
-					break
-				}
-			}
-			fmt.eprintfln(
-`kippsrv: %s produced an unusable %q fact and it was dropped.
-         Something will be missing from your desktop. This is a bug in that
-         adapter file, not in your configuration. Please report it to whoever
-         maintains it, and quote this message.
-         [E-subject] the field %q holds '=', so it read as an attribute and
-         the fact kept no subject. See DIAGNOSTICS.md.`,
-				v.paths[v.running], built.topic, culprit)
-			return 0
-		}
-	}
-
+	o: Out
+	begin(&o, verb)
+	add(&o, "%s", topic)
+	for field in payload do add(&o, "%s", field)
 	line, ok := str(&o)
 	if !ok {
-		// Silently losing a fact leaves an adapter author nothing to go on.
+		// Silently losing a line leaves an adapter author nothing to go on.
 		fmt.eprintfln(
-`kippsrv: %s produced a %q fact longer than %d bytes and it was dropped. This
+`kippsrv: %s produced a %q line longer than %d bytes and it was dropped. This
          is a bug in that adapter file, not in your configuration.
          [E-toolong] See DIAGNOSTICS.md.`,
-			v.paths[v.running], string(lua.L_checkstring(L, 1)), MAX_LINE)
-		return 0
+			v.paths[v.running], topic, MAX_LINE)
+		return
 	}
 	append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), 0})
+}
+
+@(private = "file")
+build_and_push :: proc(L: ^lua.State, verb: string) -> c.int {
+	topic := string(lua.L_checkstring(L, 1))
+	payload := make([dynamic]string, context.temp_allocator)
+	for i in 2 ..= lua.gettop(L) do append(&payload, string(lua.tostring(L, i)))
+	keep(vm_of(L), verb, topic, payload[:])
 	return 0
 }
 
-// @api k.emit(kind, field, ...)     a fact with a current value. Stored
+// @api k.retain(topic, key=value, ...)   a value. Stored. No payload deletes it
 @(private = "file")
-l_emit :: proc "c" (L: ^lua.State) -> c.int {
+l_retain :: proc "c" (L: ^lua.State) -> c.int {
 	context = runtime.default_context()
-	return build_and_push(L, .State)
+	return build_and_push(L, "retain")
 }
 
-// @api k.event(kind, field, ...)    something happened. Never stored
+// @api k.publish(topic, key=value, ...)  an event. Never stored
 @(private = "file")
-l_event :: proc "c" (L: ^lua.State) -> c.int {
+l_publish :: proc "c" (L: ^lua.State) -> c.int {
 	context = runtime.default_context()
-	return build_and_push(L, .Event)
-}
-
-// @api k.drop(kind, subject, ...)   this fact no longer exists
-@(private = "file")
-l_drop :: proc "c" (L: ^lua.State) -> c.int {
-	context = runtime.default_context()
-	return build_and_push(L, .Drop)
+	return build_and_push(L, "publish")
 }
 
 // @api k.log(...)                   diagnostics on stderr. `print` is this
@@ -358,13 +303,11 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 	lua.sethook(L, on_step, lua.MASKCOUNT, STEPS)
 
 	lua.newtable(L)
-	// (hole lua-surface :tags lua) k.emit, k.event, k.drop take v1's kind, subject, attributes; v2 is k.retain(topic, ...) and k.publish(topic, ...).
-	lua.pushcfunction(L, l_emit);  lua.setfield(L, -2, "emit")
-	lua.pushcfunction(L, l_log);   lua.setfield(L, -2, "log")
-	lua.pushcfunction(L, l_parse); lua.setfield(L, -2, "parse")
-	lua.pushcfunction(L, l_json);  lua.setfield(L, -2, "json")
-	lua.pushcfunction(L, l_event); lua.setfield(L, -2, "event")
-	lua.pushcfunction(L, l_drop);  lua.setfield(L, -2, "drop")
+	lua.pushcfunction(L, l_retain);  lua.setfield(L, -2, "retain")
+	lua.pushcfunction(L, l_publish); lua.setfield(L, -2, "publish")
+	lua.pushcfunction(L, l_log);     lua.setfield(L, -2, "log")
+	lua.pushcfunction(L, l_parse);   lua.setfield(L, -2, "parse")
+	lua.pushcfunction(L, l_json);    lua.setfield(L, -2, "json")
 	lua.setglobal(L, "k")
 
 	lua.pushcfunction(L, l_source)
@@ -423,15 +366,14 @@ vm_unload :: proc(v: ^Vm, a: Adapter) {
 // Call one function on an adapter and take back the facts it produced. The
 // returned lines live in the temp allocator and die with the loop pass.
 @(private = "file")
-call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
+call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> (out: []Emit, found: bool) {
 	clear(&v.emitted)
-	if a == NO_ADAPTER do return nil
+	if a == NO_ADAPTER do return nil, false
 
 	lua.rawgeti(v.L, lua.REGISTRYINDEX, lua.Integer(a))
 	if lua.getfield(v.L, -1, cstr(fn)) != c.int(lua.TFUNCTION) {
 		lua.pop(v.L, 2)
-		// (hole passthrough :tags lua :needs (lua-surface)) a source with no feed drops every line; v2 passes its kipp lines straight through.
-		return nil        // an adapter need not define every function
+		return nil, false        // an adapter need not define every function
 	}
 
 	nargs := c.int(0)
@@ -446,27 +388,43 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 	if lua.Status(lua.pcall(v.L, nargs, 0, 0)) != .OK {
 		fail(v, fn)
 		lua.pop(v.L, 1)
-		return nil
+		return nil, true
 	}
 	lua.pop(v.L, 1)
+	return v.emitted[:], true
+}
+
+// A file with no feed is for a program that prints kipp. Its retain and
+// publish lines pass through, and the rest of its session is not ours.
+@(private = "file")
+pass :: proc(v: ^Vm, a: Adapter, line: string) -> []Emit {
+	clear(&v.emitted)
+	v.running = a
+	fields := strings.split(line, "\t", context.temp_allocator)
+	if len(fields) >= 2 && (fields[0] == "retain" || fields[0] == "publish") {
+		keep(v, fields[0], fields[1], fields[2:])
+	}
 	return v.emitted[:]
 }
 
 // One line of a foreign format.
 vm_feed :: proc(v: ^Vm, a: Adapter, line: string) -> []Emit {
-	return call(v, a, "feed", transmute([]byte)line)
+	out, found := call(v, a, "feed", transmute([]byte)line)
+	return out if found else pass(v, a, line)
 }
 
 // The source reached the end of a batch. A format whose record spans lines
 // has no terminator on the last one, so the adapter needs telling.
 vm_flush :: proc(v: ^Vm, a: Adapter) -> []Emit {
-	return call(v, a, "flush", nil)
+	out, _ := call(v, a, "flush", nil)
+	return out
 }
 
 // Any other function on the adapter, with no argument. `tick` is the one a
 // timer source calls.
 vm_call :: proc(v: ^Vm, a: Adapter, fn: string) -> []Emit {
-	return call(v, a, fn, nil)
+	out, _ := call(v, a, fn, nil)
+	return out
 }
 
 // ------------------------------------------------------------- commands

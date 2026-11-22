@@ -4,7 +4,7 @@ function feed(line)
 	if not m then return end
 	local first = m.body and m.body[1]
 	local props = m.body and m.body[2] and m.body[2].data
-	k.emit("sig", m.member or "?",
+	k.retain("sig/" .. (m.member or "?"),
 	       "iface=" .. (m.interface or ""),
 	       "s=" .. tostring(first and first.data),
 	       "k1=" .. tostring(props and props.k1 and props.k1.data),
