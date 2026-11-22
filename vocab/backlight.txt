@@ -1,2 +1,0 @@
-# Screen and keyboard backlights.
-backlight   # <device> class= value= percent= max=

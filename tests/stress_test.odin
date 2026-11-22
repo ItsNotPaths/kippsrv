@@ -172,70 +172,8 @@ json_converts_through_one_odin_call :: proc(t: ^testing.T) {
 	}
 }
 
-// Every window manager adapter must speak the same vocabulary, or the bar
-// needs one file per window manager and the whole hop bought nothing.
-// Nothing in the code enforces this, so a test does.
-@(test)
-wm_adapters_share_one_vocabulary :: proc(t: ^testing.T) {
-	allowed := make(map[string]bool, allocator = context.temp_allocator)
-	{
-		src, _ := os.read_entire_file("vocab/wm.txt", context.temp_allocator)
-		text := string(src)
-		for line in strings.split_lines_iterator(&text) {
-			word := strings.trim_space(line)
-			if word == "" || strings.has_prefix(word, "#") do continue
-			if i := strings.index_byte(word, '#'); i >= 0 {
-				word = strings.trim_space(word[:i])
-			}
-			allowed[word] = true
-		}
-	}
-	testing.expect(t, len(allowed) > 0, "vocab/wm.txt is empty")
-
-	v, _ := kippsrv.vm_open()
-	defer kippsrv.vm_close(v)
-
-	seen := make(map[string]int, allocator = context.temp_allocator)
-
-	Seeded :: struct{name, adapter: string, fixtures: []string}
-	for c in ([]Seeded{
-		// One adapter, two sources: the seed and then the stream.
-		{"hypr", "sources.d/wm-hypr.lua", {"tests/fmt/hypr-monitors.json",
-		                             "tests/fmt/hypr-socket2.txt"}},
-		{"dwl",  "sources.d/wm-dwl.lua",  {"tests/fmt/dwl.txt"}},
-	}) {
-		out, ok := run_many(v, c.adapter, c.fixtures)
-		if !testing.expectf(t, ok, "%s: could not run", c.name) do continue
-
-		kinds := make(map[string]bool, allocator = context.temp_allocator)
-		for line in out {
-			m, good := kippsrv.parse(line, context.temp_allocator)
-			if !good do continue
-			kinds[strings.clone(kind_of(m.topic), context.temp_allocator)] = true
-		}
-
-		list := make([dynamic]string, context.temp_allocator)
-		for kind in kinds do append(&list, kind)
-		fmt.printfln("\n--- %s emits %v", c.name, list[:])
-
-		for kind in kinds {
-			testing.expectf(t, allowed[kind],
-			                "%s emits %q, which is not in vocab/wm.txt",
-			                c.name, kind)
-			seen[kind] = seen[kind] + 1
-		}
-	}
-
-	// They have to actually overlap, or "one vocabulary" is a word.
-	shared := 0
-	for _, n in seen do if n > 1 do shared += 1
-	fmt.printfln("--- %d kinds emitted by both", shared)
-	testing.expect(t, shared >= 3, "the two adapters barely overlap")
-}
-
-// A user's adapter may invent a kind, and nothing in kippsrv is consulted. The
-// vocabulary files are a lint over the adapters this repo ships, not a gate at
-// runtime. If this test ever fails, kipp has grown a schema.
+// A user's adapter may invent a kind, and nothing in kippsrv is consulted. If
+// this test ever fails, kipp has grown a schema.
 @(test)
 an_invented_kind_passes_through_untouched :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()

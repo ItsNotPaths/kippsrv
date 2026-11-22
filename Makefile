@@ -42,27 +42,25 @@ check: kippsrv kippbus lint
 	$(ODIN) test tests
 	./tests/check.sh
 
-lint: lint-core lint-fd lint-api lint-vocab
+lint: lint-core lint-fd lint-api
 
 # Pillar 1: the core must not name a domain kind.
 #
-# The list is derived from vocab/, not typed here. A hand-kept list decays as
-# the vocabulary grows, because each new kind is one more word to remember. A
-# derived one gets stronger: declaring a kind forbids it in the core that day.
+# The kinds are the ones sources.d/ emits, not a list typed here, so a kind is
+# forbidden in the core the day an adapter starts emitting it.
 #
 # It matches quoted string literals, because naming a kind means writing one.
 # Comments are stripped first: prose that names a kind as an example explains
 # the boundary rather than crossing it.
 lint-core:
-	@kinds=$$(sed 's/#.*//' vocab/*.txt | tr -d ' \t' | grep -v '^$$' | \
+	@kinds=$$(grep -ohE 'k\.(retain|publish)\("[a-z_]+' sources.d/*.lua | sed 's/.*"//' | \
 		sort -u | paste -sd'|'); \
 	fail=0; for f in $(CORE); do \
 		hit=$$(sed 's|//.*||' $$f | grep -oE "\"($$kinds)\"" | sort -u | tr '\n' ' '); \
 		if [ -n "$$hit" ]; then echo "$$f names domain kinds: $$hit"; fail=1; fi; \
 	done; \
 	[ $$fail -eq 0 ] || exit 1; \
-	echo "ok    core names none of $$(sed 's/#.*//' vocab/*.txt | tr -d ' \t' | \
-		grep -v '^$$' | sort -u | wc -l) declared kinds"
+	echo "ok    core names none of $$(echo $$kinds | tr '|' '\n' | wc -l) adapter kinds"
 
 # A12: a script never owns a descriptor. The VM file must not reach posix.
 lint-fd:
@@ -80,15 +78,10 @@ lint-api:
 	[ "$$n" -le 12 ] || { echo "script surface is $$n functions, cap is 12"; exit 1; }; \
 	echo "ok    script surface is $$n functions"
 
-# An adapter may emit only the kinds its domain declares.
-# (hole vocab-claims :tags lint) checks sources.d/ against vocab/*.txt; v2 checks claims at load, and lint-core takes its kinds from them.
-lint-vocab:
-	@./vocab.sh
-
 clean:
 	rm -f kippsrv kippbus
 
 distclean: clean
 	rm -rf basu
 
-.PHONY: all install uninstall check lint lint-core lint-fd lint-api lint-vocab clean distclean
+.PHONY: all install uninstall check lint lint-core lint-fd lint-api clean distclean

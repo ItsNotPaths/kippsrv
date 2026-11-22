@@ -10,7 +10,7 @@ import "core:strings"
 import "core:sys/posix"
 
 // An adapter that keys on something unbounded would otherwise grow the store
-// until the daemon is killed. vocab/wm.txt warns against it; this bounds it.
+// until the daemon is killed.
 MAX_FACTS    :: 4096
 PROJECT_MS   :: 250    // shortest gap between two writes of the state file
 

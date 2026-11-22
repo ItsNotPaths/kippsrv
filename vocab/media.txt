@@ -1,2 +1,0 @@
-# Whatever is playing.
-media       # <player> status= title= artist= length=
