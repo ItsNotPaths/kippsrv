@@ -136,17 +136,18 @@ A source repeats itself. `nmcli` reprints every connection whenever anything
 changes, and a poll rereads the same battery percentage all day. The store
 keeps the last value for each fact and passes on only what moved.
 
-A fact is identified by its kind and its positional subject, so
-`tag eDP-1 2 state=occupied` replaces `tag eDP-1 2 state=focused` rather than
-sitting beside it.
+A value is identified by its topic, so `retain tag/eDP-1/2 state=occupied`
+replaces `retain tag/eDP-1/2 state=focused` rather than sitting beside it.
 
 Only the adapter knows whether something has a current value:
 
 | Call | Means |
 | --- | --- |
-| `k.emit` | a fact with a current value. Stored, deduplicated, in the dump |
-| `k.event` | something happened. Passed on, never stored |
-| `k.drop` | this fact no longer exists |
+| `k.retain(topic, key=value, ...)` | a value. Stored, deduplicated, in the dump. No payload deletes it |
+| `k.publish(topic, key=value, ...)` | an event. Passed on, never stored |
+
+A file with no `feed` is for a program that prints kipp. Its `retain` and
+`publish` lines pass straight through.
 
 A source that dies does not lose its facts. They are marked `stale`, so a bar
 can grey out a headphone that still exists rather than claim it is gone.
@@ -157,25 +158,20 @@ exactly as much as ever. A poll still pays a fork, an exec, a read and a Lua
 call to find out that nothing moved. Prefer `dbus` or `sock` to `every`
 wherever a source offers one.
 
-## Subjects are identities
+## Topics are identities
 
-A subject identifies a fact. A value goes in an attribute.
+A topic identifies a value. The value goes in the payload.
 
-Use something that cannot hold `=`: a UUID, a MAC, a bus name, a device path.
-The framing rule reads the first field holding `=` as the start of the
-attributes, so a subject holding one leaves the fact with no subject at all,
-keyed on its bare kind, colliding with every other fact of that kind. kippsrv
-refuses such a fact and says which file and field caused it.
+Build a topic from something that cannot change: a UUID, a MAC, a bus name, a
+device path. A name a person typed goes in the payload, where `=` is legal,
+because only the first `=` separates a key from its value.
 
 ```lua
-k.emit("net", "home=wifi", "type=wifi")            -- refused
-k.emit("net", uuid, "name=home=wifi", "type=wifi") -- fine
+k.retain("net/" .. uuid, "name=home=wifi", "type=wifi")
 ```
 
-The name is legal in an attribute, because only the first `=` separates a key
-from its value. And the same rule catches a subtler mistake: a title or a
-percentage in the subject makes every value a separate fact, and the store
-keeps all of them.
+A title or a percentage in the topic makes every value a separate entry, and
+the store keeps all of them.
 
 ## One vocabulary
 

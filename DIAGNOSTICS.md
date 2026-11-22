@@ -8,43 +8,32 @@ the whole message: it names the file and the exact field that caused it.
 
 ---
 
-## E-subject — an adapter produced a fact with no identity
-
-Something is missing from your desktop. One entry of that kind was dropped.
-
-*For the adapter's maintainer.* A fact is identified by its kind and its
-subject fields. The framing rule reads the first field holding `=` as the start
-of the attributes, so a subject holding one leaves the fact with no subject at
-all. Its key becomes the bare kind, and it would overwrite every other fact of
-that kind.
-
-Use a subject that cannot hold `=`: a UUID, a MAC, a bus name, a device path.
-Move the readable name to an attribute, where `=` is legal. Only the first one
-separates a key from its value, so `name=home=wifi` is fine.
-
-```lua
-k.emit("net", "home=wifi", "type=wifi")            -- wrong
-k.emit("net", uuid, "name=home=wifi", "type=wifi") -- right
-```
-
-An event is exempt. It is never stored, so it needs no identity.
-
 ## E-word — an adapter produced a line that is not kipp
 
 That one line was dropped. Everything else is unaffected.
 
-*For the adapter's maintainer.* A kind and every attribute key are words of
-lowercase letters, digits and underscores, and never a number, as kipp's
-`SPEC.md` says. A reader takes anything else apart wrongly or not at all, so
-kippsrv keeps it off the socket. The message names the kind or key at fault.
+*For the adapter's maintainer.* A topic's kind and every payload key are
+words of lowercase letters, digits and underscores, and never a number. The
+rest of a topic holds no `*`, `?` or `[`. Every field after the topic is
+`key=value`. This is kipp's `SPEC.md`. A reader takes anything else apart
+wrongly or not at all, so kippsrv keeps it off the socket. The message names
+the topic or field at fault.
 
-## E-toolong — an adapter produced a fact over 1024 bytes
+```lua
+k.retain("net/" .. uuid, "home")            -- wrong: no '='
+k.retain("net/" .. uuid, "name=home")       -- right
+```
 
-That one fact was dropped. Everything else is unaffected.
+A program that prints kipp through a file with no `feed` is held to the same
+rules.
+
+## E-toolong — an adapter produced a line over 1024 bytes
+
+That one line was dropped. Everything else is unaffected.
 
 *For the adapter's maintainer.* 1024 bytes is the line limit in kipp's
 `SPEC.md`. A window title or a media title can reach it. Truncate the field
-before emitting it.
+before passing it.
 
 ## E-cmdemit — an adapter emitted a fact while taking a command
 
