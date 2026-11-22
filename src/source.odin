@@ -5,39 +5,14 @@
 //   timer  fire on a period
 //   dbus   subscribe to a signal          (dbus.odin, not here)
 //
-// A source owns the descriptor and the framing, so an adapter gets whole
-// units and never reassembles a torn one.
+// A source owns the descriptor and cuts its output into lines, so an adapter
+// gets whole lines and never reassembles a torn one.
 package kippsrv
 
 import "core:c"
 import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
-
-// ---------------------------------------------------------------- framing
-
-// Split on a newline. Nearly every text tool.
-Lines :: struct {}
-
-// A fixed header carrying the body length. i3 and sway are
-// {header = 14, at = 6, width = 4, le = true}: six bytes of magic, then the
-// length, then the message type.
-Prefix :: struct {
-	header: int,
-	at:     int,
-	width:  int,
-	le:     bool,
-}
-
-// Hand over whatever arrived. For a source that frames itself.
-Raw :: struct {}
-
-// (hole lines-only :tags sources) Prefix and Raw go; every source is lines.
-Framing :: union #no_nil {
-	Lines,
-	Prefix,
-	Raw,
-}
 
 Kind :: enum {
 	Exec,
@@ -53,7 +28,6 @@ Source :: struct {
 	fd:      posix.FD,
 	pid:     posix.pid_t,
 	adapter: Adapter,
-	framing: Framing,
 	buf:     [dynamic]byte,
 	argv:    []string,   // exec, kept so it can be run again
 	path:    string,     // sock, kept so it can be dialled again
@@ -86,7 +60,7 @@ Sources :: struct {
 	warned:  bool,        // the poll set overflowed, reported once
 }
 
-MAX_BUF   :: 1 << 20   // a source that never frames must not grow without end
+MAX_BUF   :: 1 << 20   // a source that never ends a line must not grow without end
 RETRY_MS  :: 2000      // how often a closed socket is dialled again
 
 // A poll that learns nothing still costs a fork, an exec and a Lua call. The
@@ -147,7 +121,7 @@ add :: proc(ss: ^Sources, s: ^Source) -> ^Source {
 // A command that ends and is run again on a period. `every` of 0 runs it once.
 // (hole exec-sh :tags sources) runs an argv list; v2 runs the exec string with sh -c.
 src_exec :: proc(ss: ^Sources, name: string, argv: []string, adapter: Adapter,
-                 framing: Framing = Lines{}, every: i64 = 0) -> (^Source, bool) {
+                 every: i64 = 0) -> (^Source, bool) {
 	// Built before the fork. Between fork and exec only async-signal-safe
 	// calls are allowed, and an allocator whose lock another thread held at
 	// fork time will never unlock in the child.
@@ -183,7 +157,7 @@ src_exec :: proc(ss: ^Sources, name: string, argv: []string, adapter: Adapter,
 
 	return add(ss, new_clone(Source{
 		name = strings.clone(name), kind = .Exec, fd = fds[0], pid = pid,
-		adapter = adapter, framing = framing, argv = kept, every = every, base = every,
+		adapter = adapter, argv = kept, every = every, base = every,
 	})), true
 }
 
@@ -223,7 +197,7 @@ respawn :: proc(s: ^Source) -> bool {
 
 // Connect to a unix socket and read it.
 src_sock :: proc(ss: ^Sources, name, path: string,
-                 adapter: Adapter, framing: Framing = Lines{}) -> (^Source, bool) {
+                 adapter: Adapter) -> (^Source, bool) {
 	addr: posix.sockaddr_un
 	if len(path) >= len(addr.sun_path) do return nil, false
 	addr.sun_family = .UNIX
@@ -238,7 +212,7 @@ src_sock :: proc(ss: ^Sources, name, path: string,
 	set_flags(fd)
 	return add(ss, new_clone(Source{
 		name = strings.clone(name), kind = .Sock, fd = fd, path = strings.clone(path),
-		adapter = adapter, framing = framing, every = RETRY_MS, base = RETRY_MS,
+		adapter = adapter, every = RETRY_MS, base = RETRY_MS,
 	})), true
 }
 
@@ -341,56 +315,22 @@ src_close :: proc(ss: ^Sources) {
 
 // -------------------------------------------------------------- deframing
 
-// One whole unit, or nothing. The caller reads again and asks later.
+// One whole line, or nothing. The caller reads again and asks later.
 @(private = "file")
 take :: proc(s: ^Source) -> ([]byte, bool) {
-	switch f in s.framing {
-	case Lines:
-		blank := 0      // a blank line carries nothing
-		for blank < len(s.buf) && s.buf[blank] == '\n' do blank += 1
-		if blank > 0 {
-			copy(s.buf[:], s.buf[blank:])
-			resize(&s.buf, len(s.buf) - blank)
-		}
-		for b, i in s.buf {
-			if b == '\n' {
-				unit := s.buf[:i]
-				return unit, true
-			}
-		}
-		return nil, false
-
-	case Prefix:
-		// A zero unit would be consumed as zero bytes and asked for again
-		// forever. config_load rejects the values that produce one, and this
-		// is the second line of defence.
-		if f.header <= 0 || f.width <= 0 || f.at + f.width > f.header {
-			return nil, false
-		}
-		if len(s.buf) < f.header do return nil, false
-
-		size := 0
-		for i in 0 ..< f.width {
-			shift := uint(8 * (i if f.le else f.width - 1 - i))
-			size |= int(s.buf[f.at + i]) << shift
-		}
-		total := f.header + size
-		if size < 0 || total > MAX_BUF do return nil, false
-		if len(s.buf) < total do return nil, false
-		return s.buf[:total], true
-
-	case Raw:
-		if len(s.buf) == 0 do return nil, false
-		return s.buf[:], true
+	blank := 0      // a blank line carries nothing
+	for blank < len(s.buf) && s.buf[blank] == '\n' do blank += 1
+	if blank > 0 {
+		copy(s.buf[:], s.buf[blank:])
+		resize(&s.buf, len(s.buf) - blank)
 	}
+	for b, i in s.buf do if b == '\n' do return s.buf[:i], true
 	return nil, false
 }
 
 @(private = "file")
 consumed :: proc(s: ^Source, unit: []byte) {
-	n := len(unit)
-	if _, is_lines := s.framing.(Lines); is_lines do n += 1   // the newline
-	if n > len(s.buf) do n = len(s.buf)
+	n := min(len(unit) + 1, len(s.buf))   // the newline
 	copy(s.buf[:], s.buf[n:])
 	resize(&s.buf, len(s.buf) - n)
 }
@@ -451,13 +391,9 @@ emit_into :: proc(out: ^[dynamic]Emit, es: []Emit, src: int) {
 	}
 }
 
-// The framing says which call the adapter gets. Nothing else needs to know.
 @(private = "file")
 feed :: proc(v: ^Vm, s: ^Source, unit: []byte) -> []Emit {
-	if _, is_lines := s.framing.(Lines); is_lines {
-		return vm_feed(v, s.adapter, string(unit))
-	}
-	return vm_feed_bytes(v, s.adapter, unit)
+	return vm_feed(v, s.adapter, string(unit))
 }
 
 // One framed unit, either to the adapter now or held until the window opens.
@@ -506,9 +442,8 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 			if n > 0 {
 				if len(s.buf) + int(n) > MAX_BUF {
 					fmt.eprintfln(
-`kippsrv: source %q sent over %d bytes with no complete unit in them, so they
-         were discarded. Its framing does not match what it produces.
-         [E-framing] See DIAGNOSTICS.md.`, s.name, MAX_BUF)
+`kippsrv: source %q sent over %d bytes with no newline in them, so they were
+         discarded. [E-framing] See DIAGNOSTICS.md.`, s.name, MAX_BUF)
 					clear(&s.buf)
 				} else {
 					append(&s.buf, ..chunk[:int(n)])
@@ -531,21 +466,13 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 		for {
 			unit, got := take(s)
 			if !got do break
-			if len(unit) == 0 {
-				fmt.eprintfln(
-`kippsrv: source %q stopped: its framing produced an empty unit, which would
-         repeat for ever. Check the framing block for this source in
-         config.lua. [E-framing] See DIAGNOSTICS.md.`, s.name)
-				s.dead = true
-				break
-			}
 			src_feed(ss.vm, s, &out, unit)
 			consumed(s, unit)
 		}
 
 		if eof {
 			// A last line with no trailing newline is still a line.
-			if _, is_lines := s.framing.(Lines); is_lines && len(s.buf) > 0 {
+			if len(s.buf) > 0 {
 				src_feed(ss.vm, s, &out, s.buf[:])
 				clear(&s.buf)
 			}

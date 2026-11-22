@@ -1,8 +1,6 @@
 -- (hole adapters-v2) emits v1 kinds, and its source lines live in config.lua.
--- sway and i3. One JSON object a line, so this is an exec source with Lines
--- framing and no protocol work. The binary i3 IPC in lua/wm/i3.lua is the
--- other way to read the same window manager, and it needs an outbound request
--- before it says anything.
+-- sway and i3. One JSON object a line, so this is an exec source with no
+-- protocol work.
 --
 -- Three sources share this file: `swaymsg -t get_outputs -r` says which
 -- monitor is focused, `swaymsg -t get_workspaces -r` says which tags exist,

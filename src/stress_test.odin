@@ -171,43 +171,6 @@ json_converts_through_one_odin_call :: proc(t: ^testing.T) {
 	}
 }
 
-// Binary framing. Lua strings are 8-bit clean and string.unpack is in the
-// string library, so the adapter reads the frame itself. Odin hands over the
-// bytes and never learns the magic string.
-//
-// The frames here are synthesized. No i3 or sway is installed on this
-// machine, so this proves the mechanism and not compatibility.
-@(test)
-a_binary_frame_is_read_in_lua :: proc(t: ^testing.T) {
-	frame :: proc(kind: u32, body: string) -> []byte {
-		out := make([dynamic]byte, context.temp_allocator)
-		append(&out, "i3-ipc")
-		for shift in ([]uint{0, 8, 16, 24}) do append(&out, byte(u32(len(body)) >> shift))
-		for shift in ([]uint{0, 8, 16, 24}) do append(&out, byte(kind >> shift))
-		append(&out, body)
-		return out[:]
-	}
-
-	v, _ := vm_open()
-	defer vm_close(v)
-
-	a, ok := vm_load(v, "lua/wm/i3.lua")
-	if !testing.expect(t, ok) do return
-	defer vm_unload(v, a)
-
-	ws := `[{"num":1,"name":"one","output":"eDP-1","focused":true},
-	        {"num":2,"name":"two","output":"HDMI-A-1","focused":false}]`
-	out := vm_feed_bytes(v, a, frame(1, ws))
-
-	fmt.printfln("\n--- i3-shaped binary frame -> %d lines", len(out))
-	for l in out do fmt.printfln("    %s", l)
-
-	testing.expect_value(t, len(out), 3)
-	if len(out) < 3 do return
-	testing.expect_value(t, out[0].line, "retain\ttag/eDP-1/1\tstate=focused,occupied")
-	testing.expect_value(t, out[1].line, "retain\tfocus/eDP-1")
-}
-
 // Every window manager adapter must speak the same vocabulary, or the bar
 // needs one file per window manager and the whole hop bought nothing.
 // Nothing in the code enforces this, so a test does.

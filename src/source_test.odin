@@ -69,44 +69,6 @@ eof_flushes_the_last_record :: proc(t: ^testing.T) {
 }
 
 @(test)
-prefix_framing_cuts_whole_frames :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
-
-	a, ok := vm_load(v, "lua/wm/i3.lua")
-	if !testing.expect(t, ok) do return
-
-	// i3 and sway: six bytes of magic, a 32-bit length, a 32-bit type.
-	_, spawned := src_exec(&ss, "cat", {"cat", "test/fmt/i3-frames.bin"}, a,
-	                       Prefix{header = 14, at = 6, width = 4, le = true})
-	if !testing.expect(t, spawned) do return
-
-	out := drain(&ss)
-	fmt.printfln("--- exec, length prefixed -> %d", len(out))
-	for l in out do fmt.printfln("    %s", l)
-	testing.expect_value(t, len(out), 2)
-}
-
-@(test)
-raw_framing_hands_over_the_chunk :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
-
-	a, _ := vm_load(v, "test/lua/raw.lua")
-	_, spawned := src_exec(&ss, "printf", {"printf", "no newline here"}, a, Raw{})
-	if !testing.expect(t, spawned) do return
-
-	out := drain(&ss)
-	fmt.printfln("--- exec, raw -> %v", out)
-	testing.expect_value(t, len(out), 1)
-	if len(out) == 1 do testing.expect_value(t, out[0], "publish\tchunk\tbytes=15")
-}
-
-@(test)
 timer_source_fires_on_its_period :: proc(t: ^testing.T) {
 	v, _ := vm_open()
 	defer vm_close(v)
@@ -135,7 +97,7 @@ an_idle_source_backs_off :: proc(t: ^testing.T) {
 	defer src_close(&ss)
 
 	a, _ := vm_load(v, "lua/wm/example.lua")
-	s, ok := src_exec(&ss, "p", {"true"}, a, Lines{}, 2000)
+	s, ok := src_exec(&ss, "p", {"true"}, a, 2000)
 	if !testing.expect(t, ok) do return
 
 	s.done = true
@@ -174,7 +136,7 @@ a_throttled_source_holds_the_newest_unit :: proc(t: ^testing.T) {
 	defer src_close(&ss)
 
 	a, _ := vm_load(v, "lua/wm/example.lua")
-	s, ok := src_exec(&ss, "p", {"true"}, a, Lines{}, 0)
+	s, ok := src_exec(&ss, "p", {"true"}, a, 0)
 	if !testing.expect(t, ok) do return
 	s.thr.min_gap = 10_000
 

@@ -410,8 +410,8 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 
 	nargs := c.int(0)
 	if data, has := arg.?; has {
-		// pushlstring, not pushstring: a length-prefixed frame holds NUL
-		// bytes, and a cstring would stop at the first one.
+		// pushlstring, not pushstring: a line can hold a NUL byte, and a
+		// cstring would stop at the first one.
 		lua.pushlstring(v.L, cstring(raw_data(data)), c.size_t(len(data)))
 		nargs = 1
 	}
@@ -429,17 +429,6 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 // One line of a foreign format.
 vm_feed :: proc(v: ^Vm, a: Adapter, line: string) -> []Emit {
 	return call(v, a, "feed", transmute([]byte)line)
-}
-
-// One chunk of a stream that is not lines. A length-prefixed or binary
-// format arrives here, and the adapter deframes it with string.unpack.
-//
-// Odin does not deframe. The moment the core learns a magic string or a
-// header layout it has learned a foreign protocol, and Pillar 1 is gone.
-// "lines or raw" is a transport noun, which the core is allowed to hold.
-// (hole lines-only) goes with Prefix and Raw.
-vm_feed_bytes :: proc(v: ^Vm, a: Adapter, data: []byte) -> []Emit {
-	return call(v, a, "feed", data)
 }
 
 // The source reached the end of a batch. A format whose record spans lines

@@ -31,7 +31,6 @@ Src_Spec :: struct {
 	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
 	cmd:     string,     // where a command goes back out, when it is not `sock`
-	framing: Framing,
 }
 
 @(private = "file")
@@ -109,38 +108,6 @@ field_list :: proc(L: ^lua.State, key: cstring) -> []string {
 	return out
 }
 
-// The framing a source declares. Absent means lines, which is nearly always
-// right. A binary source says so.
-@(private = "file")
-// (hole lines-only) goes with Prefix and Raw.
-field_framing :: proc(L: ^lua.State) -> Framing {
-	defer lua.pop(L, 1)
-	if lua.getfield(L, -1, "framing") != c.int(lua.TTABLE) do return Lines{}
-
-	kind, _ := field_str(L, "kind")
-	switch kind {
-	case "raw":
-		return Raw{}
-	case "prefix":
-		p := Prefix{
-			header = int(field_int(L, "header")),
-			at     = int(field_int(L, "at")),
-			width  = int(field_int(L, "width")),
-			le     = field_bool(L, "le"),
-		}
-		// A header that holds no length field would frame nothing and be
-		// asked for again forever.
-		if p.header <= 0 || p.width <= 0 || p.at < 0 || p.at + p.width > p.header {
-			fmt.eprintfln("config: prefix framing needs 0 <= at, 0 < width, " +
-			              "at+width <= header. Got header=%d at=%d width=%d. " +
-			              "Falling back to lines.", p.header, p.at, p.width)
-			return Lines{}
-		}
-		return p
-	}
-	return Lines{}
-}
-
 // How often a source may reach its adapter. Absent means the defaults.
 // `false` means never held back. A table overrides the keys it names.
 @(private = "file")
@@ -207,7 +174,6 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 		s.bus_name, _ = field_str(L, "bus_name")
 		s.every = field_int(L, "every")
 		s.cmd, _ = field_str(L, "cmd")
-		s.framing = field_framing(L)
 
 		if s.adapter == "" && !s.watcher && !s.notify {
 			fmt.eprintfln("config: source %d has no adapter, skipped", i)
@@ -259,9 +225,9 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 		ok: bool
 		switch {
 		case len(spec.exec) > 0:
-			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.framing, spec.every)
+			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.every)
 		case spec.sock != "":
-			src, ok = src_sock(ss, spec.name, spec.sock, a, spec.framing)
+			src, ok = src_sock(ss, spec.name, spec.sock, a)
 		// (hole drop-sdbus :tags bus :needs (kippbus-match kippbus-tray kippbus-notify passthrough)) kippsrv opens D-Bus itself; v2 runs kippbus as an exec source.
 		case len(spec.dbus) > 0 || spec.watcher || spec.notify:
 			src, ok = dbus_open(ss, spec.name, spec.system, spec.dbus, a)
