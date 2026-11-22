@@ -8,8 +8,8 @@
 // The split is watcher.odin's. Odin answers the protocol -- the name, the
 // reply serials, the marshalling, the id -- and none of those need to ask Lua
 // anything, so no caller ever waits on the VM. What a notification *is* is
-// named in sources.d/notify-fdo.lua, the same way the tray's registrations are named
-// in sources.d/tray-snw.lua.
+// named in sources.d/notify-fdo.lua, the same way the tray's registrations
+// are named in sources.d/tray-snw.lua.
 //
 // Two members past the spec live on an interface of our own. Closing is in the
 // spec; being read is not, because a spec notification is a toast that appears

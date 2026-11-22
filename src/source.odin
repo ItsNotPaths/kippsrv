@@ -600,13 +600,13 @@ src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 			// times running has nothing left to say.
 			if s.dead && s.kind != .Sock do continue
 
-			// An exec's run is judged when it exits, in src_reap.
-			if s.kind == .Sock ? redial(s) : respawn(s) {
-				if s.kind == .Sock do s.fails = 0
-				s.dead = false
-			} else {
+			started := redial(s) if s.kind == .Sock else respawn(s)
+			if !started {
 				failed_run(s)
 				s.due = now + s.every
+			} else if s.kind == .Sock {
+				s.fails = 0       // an exec's run is judged when it exits, in src_reap
+				s.dead = false
 			}
 		}
 	}

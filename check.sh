@@ -24,7 +24,7 @@ start() {
 	sleep 0.4
 }
 
-# A shipped file with its own sources taken out and the one given put in.
+# A shipped file with its own one-line sources taken out and the one given put in.
 adapter() {
 	grep -v '^source' "sources.d/$1"
 	printf '%s\n' "$2"

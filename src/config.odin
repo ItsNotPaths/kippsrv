@@ -185,11 +185,9 @@ spec_free :: proc(s: ^Src_Spec) {
 
 // ---------------------------------------------------------------- loading
 
-// Each file name once, from the first folder that holds it: the user's, then
-// each of XDG_DATA_DIRS in order. Sorted, so which of two clashing files loads
-// first does not depend on the file system.
+// The user's folder, then each of XDG_DATA_DIRS, most important first.
 @(private = "file")
-source_files :: proc() -> []string {
+source_folders :: proc() -> []string {
 	config_home := os.get_env("XDG_CONFIG_HOME", context.temp_allocator)
 	if config_home == "" {
 		config_home = fmt.tprintf("%s/.config", os.get_env("HOME", context.temp_allocator))
@@ -202,9 +200,15 @@ source_files :: proc() -> []string {
 	for folder in strings.split(data_dirs, ":", context.temp_allocator) {
 		if folder != "" do append(&folders, fmt.tprintf("%s/kippsrv/sources.d", folder))
 	}
+	return folders[:]
+}
 
+// Each file name once, from the first folder that holds it. Sorted, so which
+// of two clashing files loads first does not depend on the file system.
+@(private = "file")
+source_files :: proc() -> []string {
 	found := make(map[string]string, allocator = context.temp_allocator)
-	for folder in folders {
+	for folder in source_folders() {
 		entries, err := os.read_all_directory_by_path(folder, context.temp_allocator)
 		if err != nil do continue
 		for entry in entries {

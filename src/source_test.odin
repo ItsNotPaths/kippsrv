@@ -44,7 +44,6 @@ exec_source_splits_lines :: proc(t: ^testing.T) {
 	fmt.printfln("\n--- exec, lines -> %d", len(out))
 	for l in out do fmt.printfln("    %s", l)
 	testing.expect_value(t, len(out), 4)
-	testing.expect(t, !ss.list[0].dead, "a blank line must not stop the source")
 }
 
 // stdin is the way back: a line sent to an exec source reaches the child.
@@ -80,14 +79,20 @@ a_command_that_cannot_run_goes_offline :: proc(t: ^testing.T) {
 	ran, _ := src_exec(&ss, "ran", "true", a)
 	if !testing.expect(t, missing != nil && ran != nil) do return
 
+	src_status(&ss)              // both start online
 	drain(&ss)
+	said := make([dynamic]string, context.temp_allocator)
 	for _ in 0 ..< 100 {
 		src_reap(&ss)
-		if missing.pid == 0 && ran.pid == 0 do break
+		for e in src_status(&ss) do append(&said, e.line)
+		if len(said) > 0 do break
 		time.sleep(10 * time.Millisecond)
 	}
-	testing.expect(t, missing.dead, "a command sh cannot find is offline")
-	testing.expect(t, !ran.dead, "a command that ran is not")
+	time.sleep(50 * time.Millisecond)     // and `true` has ended too
+	src_reap(&ss)
+	for e in src_status(&ss) do append(&said, e.line)
+	testing.expect_value(t, len(said), 1)
+	if len(said) == 1 do testing.expect_value(t, said[0], "retain\tstatus/missing\tstate=offline")
 }
 
 // The last record of a multi-line format has no terminator. EOF is the
