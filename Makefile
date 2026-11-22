@@ -1,10 +1,9 @@
-ODIN ?= odin
-CORE  = $(wildcard src/*.odin)
+ODIN   ?= odin
+PREFIX ?= /usr/local
+CORE    = $(wildcard src/*.odin)
 
-# kippbus links sd-bus, which has two implementations. libsystemd is the
-# default because a systemd machine already has it. `make static` uses basu
-# instead and links it in, so the binary needs no D-Bus library at all. That
-# is the form to package. kippsrv links neither.
+# kippbus links basu, sd-bus without systemd, so it needs no D-Bus library at
+# run time. kippsrv links no bus at all.
 BASU_REPO ?= https://git.sr.ht/~emersion/basu
 BASU_REV  ?= 315664a875ad37bd9cee75af00ab4d1d3edc105e
 
@@ -13,24 +12,31 @@ all: kippsrv kippbus
 kippsrv: src/*.odin
 	$(ODIN) build src -out:$@
 
-kippbus: bus/*.odin
-	$(ODIN) build bus -out:$@
-
-static: kippsrv basu/build/libbasu.a bus/*.odin
-	$(ODIN) build bus -define:BASU=true -out:kippbus \
-		-extra-linker-flags:"-L$(CURDIR)/basu/build"
+kippbus: basu/build/libbasu.a bus/*.odin
+	$(ODIN) build bus -out:$@ -extra-linker-flags:"-L$(CURDIR)/basu/build"
 
 # basu is pinned to a commit and built once. It is not copied into this repo:
 # 34k lines of someone else's C does not belong in the tree, and a pin gives
 # the same reproducibility without them.
 basu/build/libbasu.a:
-	@command -v meson >/dev/null || { echo "need meson, ninja and gperf"; exit 1; }
+	@for tool in meson ninja gperf; do \
+		command -v $$tool >/dev/null || { echo "basu needs meson, ninja and gperf: no $$tool"; exit 1; }; \
+	done
 	rm -rf basu
 	git clone -q $(BASU_REPO) basu
 	cd basu && git checkout -q $(BASU_REV)
 	meson setup basu/build basu --default-library=static --buildtype=release \
 		-Daudit=disabled -Dlibcap=disabled
 	ninja -C basu/build libbasu.a
+
+# The layout a release tarball unpacks into, and what XDG_DATA_DIRS finds.
+install: all
+	install -Dm755 -t $(DESTDIR)$(PREFIX)/bin kippsrv kippbus
+	install -Dm644 -t $(DESTDIR)$(PREFIX)/share/kippsrv/sources.d sources.d/*.lua
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/kippsrv $(DESTDIR)$(PREFIX)/bin/kippbus
+	rm -rf $(DESTDIR)$(PREFIX)/share/kippsrv
 
 check: kippsrv kippbus lint
 	$(ODIN) test tests
@@ -85,4 +91,4 @@ clean:
 distclean: clean
 	rm -rf basu
 
-.PHONY: all check static lint lint-core lint-fd lint-api lint-vocab clean distclean
+.PHONY: all install uninstall check lint lint-core lint-fd lint-api lint-vocab clean distclean

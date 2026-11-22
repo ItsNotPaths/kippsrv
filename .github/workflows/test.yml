@@ -1,0 +1,31 @@
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Only catches a hang.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # meson, ninja and gperf build basu. socat is check.sh's client, and
+      # dbus gives the bus checks a session bus instead of a skip.
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+              meson ninja-build gperf pkg-config socat dbus
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: dev-2026-10
+
+      - name: Check
+        run: dbus-run-session -- make check

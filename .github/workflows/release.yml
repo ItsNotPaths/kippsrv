@@ -1,0 +1,67 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        type: string
+      notes:
+        description: 'Release notes'
+        required: false
+        type: string
+        default: ''
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+              meson ninja-build gperf pkg-config socat dbus
+
+      - name: Install Odin
+        uses: laytan/setup-odin@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release: dev-2026-10
+
+      - name: Check
+        run: dbus-run-session -- make check
+
+      # A prefix tree: `tar -C /usr/local -xzf` installs it, and
+      # /usr/local/share is on the default XDG_DATA_DIRS.
+      #
+      # CAUTION: both binaries link the glibc of this runner and need a
+      # system at least as new. Nothing else: Lua and basu are linked in.
+      - name: Package
+        run: |
+          make install DESTDIR="$PWD/stage" PREFIX=
+          tar -C stage -czf "kippsrv-${{ inputs.version }}-linux-x86_64.tar.gz" bin share
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "${{ inputs.version }}" \
+              "kippsrv-${{ inputs.version }}-linux-x86_64.tar.gz" \
+              --target "${{ github.sha }}" \
+              --title "${{ inputs.version }}" \
+              --notes "${{ inputs.notes }}" \
+              $PRERELEASE_FLAG

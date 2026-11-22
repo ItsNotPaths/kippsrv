@@ -320,25 +320,18 @@ each takes are listed at the top of `bus/tray.odin` and `bus/notify.odin`.
 libdbus is everywhere and would make exporting an interface manual message
 dispatch. sd-bus has `sd_bus_add_object_vtable`.
 
-sd-bus has two implementations, and basu is the same API without systemd:
-
-```sh
-make            # kippbus links libsystemd, for a machine that has it
-make static     # kippbus links basu, fetched at a pinned commit
-```
-
-`make static` leaves a kippbus needing no D-Bus library at run time, and it is
-the one to package. kippsrv links neither.
+kippbus links basu, which is sd-bus without systemd, so it needs no D-Bus
+library at run time and there is one build: what you test is what you ship.
+kippsrv links no bus at all.
 
 basu is pinned in the Makefile, not copied into this repo. 34k lines of someone
 else's C does not belong in the tree, and a pinned commit gives the same
 reproducibility. Building it needs meson, ninja and gperf. All the symbols
-kippbus uses are listed in `bus/sdbus.odin`, and all are in basu.
+kippbus uses are listed in `bus/sdbus.odin`.
 
-The vtable struct is the one place they disagree. libsystemd is 56 bytes and
-carries parameter names and a format reference. basu is 48 and does not.
-`sd_bus_add_object_vtable` rejects a mismatch at run time rather than compile
-time, so the layout follows the same `when` switch as the library.
+libsystemd's vtable struct is 56 bytes, with parameter names and a format
+reference, and basu's is 48. The layout in `bus/sdbus.odin` is basu's, and a
+mismatch would show only at run time.
 
 ## What the adapters absorb
 
@@ -418,8 +411,13 @@ this one with no change.
 ## Build
 
 ```sh
-make          # kippsrv and kippbus
-make static   # kippbus with basu linked in
-make check    # lint, unit tests, then a socat round trip
-make lint     # the four architecture checks alone
+make            # kippsrv and kippbus, building basu the first time
+make check      # lint, unit tests, then a socat round trip
+make lint       # the four architecture checks alone
+make install    # PREFIX=/usr/local by default, DESTDIR for staging
+
+./build.sh --public --version v0.1.0   # run release.yml on GitHub and watch it
 ```
+
+A release is a prefix tree: `tar -C /usr/local -xzf kippsrv-*.tar.gz`. Both
+binaries need only glibc, as new as the CI runner's.

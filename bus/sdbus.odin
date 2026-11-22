@@ -8,12 +8,8 @@ import "core:strings"
 Bus :: struct {}
 Bus_Message :: struct {}
 
-// libsystemd by default, basu with -define:BASU=true. Same API either way.
-when #config(BASU, false) {
-	foreign import sdbus "system:basu"
-} else {
-	foreign import sdbus "system:systemd"
-}
+// basu: sd-bus without systemd, built by the Makefile and linked in.
+foreign import sdbus "system:basu"
 
 @(default_calling_convention = "c", link_prefix = "sd_")
 foreign sdbus {
@@ -50,15 +46,6 @@ foreign sdbus {
 	bus_message_close_container      :: proc(message: ^Bus_Message) -> c.int ---
 }
 
-// libsystemd checks a vtable was built against its own header by pointing at
-// this. basu has no such check, and no such symbol.
-when !#config(BASU, false) {
-	@(default_calling_convention = "c")
-	foreign sdbus {
-		sd_bus_object_vtable_format: u32
-	}
-}
-
 text_of :: proc(text: cstring) -> string {
 	return text == nil ? "" : string(text)
 }
@@ -69,37 +56,21 @@ cstr :: proc(text: string) -> cstring {
 
 // ------------------------------------------------------------ the vtable
 //
-// libsystemd is 56 bytes and carries parameter names and a format reference.
-// basu is 48 and does not. A mismatch is refused at run time, so the layout
-// follows the same switch as the library.
+// basu's layout, 48 bytes. libsystemd's is 56, with parameter names and a
+// format reference, and a mismatch shows only at run time.
 
-when #config(BASU, false) {
-	Vtable_Start :: struct {
-		element_size: uint,
-	}
-	Vtable_Method :: struct {
-		member, signature, result: cstring,
-		handler:                   Method_Handler,
-		offset:                    uint,
-	}
-	Vtable_Signal :: struct {
-		member, signature: cstring,
-	}
-} else {
-	Vtable_Start :: struct {
-		element_size:            uint,
-		features:                u64,
-		vtable_format_reference: ^u32,
-	}
-	Vtable_Method :: struct {
-		member, signature, result: cstring,
-		handler:                   Method_Handler,
-		offset:                    uint,
-		names:                     cstring,
-	}
-	Vtable_Signal :: struct {
-		member, signature, names: cstring,
-	}
+Vtable_Start :: struct {
+	element_size: uint,
+}
+
+Vtable_Method :: struct {
+	member, signature, result: cstring,
+	handler:                   Method_Handler,
+	offset:                    uint,
+}
+
+Vtable_Signal :: struct {
+	member, signature: cstring,
 }
 
 Vtable_Property :: struct {
@@ -140,9 +111,6 @@ vtable_head :: proc(type: u64, flags: u64) -> u64 {
 vtable_start :: proc() -> (entry: Vtable) {
 	entry.head = vtable_head(VTABLE_START, 0)
 	entry.body.start.element_size = size_of(Vtable)
-	when !#config(BASU, false) {
-		entry.body.start.vtable_format_reference = &sd_bus_object_vtable_format
-	}
 	return
 }
 
