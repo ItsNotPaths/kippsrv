@@ -1,4 +1,3 @@
--- (hole adapters-v2) emits v1 kinds.
 -- brightnessctl -m: `device,class,value,percent,max`, comma separated.
 -- throttle = false: a person drives this, like the volume.
 source { name = "backlight", exec = "brightnessctl -m", every = 2000, throttle = false,
@@ -8,6 +7,6 @@ function feed(line)
 	local f = {}
 	for w in line:gmatch("[^,]+") do f[#f + 1] = w end
 	if #f < 5 then return end
-	k.emit("backlight", f[1], "class=" .. f[2], "value=" .. f[3],
-	       "percent=" .. f[4]:gsub("%%", ""), "max=" .. f[5])
+	k.retain("backlight/" .. f[1], "class=" .. f[2], "value=" .. f[3],
+	         "percent=" .. f[4]:gsub("%%", ""), "max=" .. f[5])
 end

@@ -1,4 +1,3 @@
--- (hole adapters-v2) emits v1 kinds.
 -- sway and i3. One JSON object a line, so this is an exec source with no
 -- protocol work.
 --
@@ -8,7 +7,7 @@
 -- adapter once however many sources name it, so all three share this state.
 -- Off, like every window manager. The seeds run once; the stream runs until
 -- sway exits.
-local claim = {"focus/*", "tags/*", "tag/*", "layout/*", "title/*", "app/*", "mode/*"}
+local claim = {"focus", "mode", "tags/*", "tag/*", "layout/*", "title/*", "app/*"}
 --source { name = "mon-seed", exec = "swaymsg -t get_outputs -r", retains = claim }
 --source { name = "tag-seed", exec = "swaymsg -t get_workspaces -r", retains = claim }
 --source { name = "wm", exec = [[swaymsg -m -t subscribe '["workspace","window","mode"]']],
@@ -22,22 +21,22 @@ local SEED_MAX = 4096    -- a stream never flushes, so this cannot grow
 local function set_tag(m, id)
 	local was = focused[m]
 	if was == id then return end
-	if was then k.emit("tag", m, was, "state=occupied") end
+	if was then k.retain("tag/" .. m .. "/" .. was, "state=occupied") end
 	focused[m] = id
-	k.emit("tag", m, id, "state=focused,occupied")
+	k.retain("tag/" .. m .. "/" .. id, "state=focused,occupied")
 end
 
 local function set_mon(m)
 	if not m or m == mon then return end
 	mon = m
-	k.emit("focus", m)
+	k.retain("focus", "mon=" .. m)
 end
 
 local function show(c)
 	if not mon or not c then return end
 	local id = c.app_id or c.window_properties and c.window_properties.class
-	if id and id ~= "" then k.emit("app", mon, "id=" .. id) end
-	if c.name then k.emit("title", mon, "text=" .. c.name) end
+	if id and id ~= "" then k.retain("app/" .. mon, "id=" .. id) end
+	if c.name then k.retain("title/" .. mon, "text=" .. c.name) end
 end
 
 function feed(line)
@@ -63,12 +62,12 @@ function feed(line)
 		-- The three that arrive on one keypress are init, focus, empty:
 		-- a new workspace exists and holds nothing, focus moves to it,
 		-- and the one we left is removed. init says focused=false, so
-		-- only focus emits, and empty takes the old fact away again.
+		-- only focus retains, and empty takes the old value away again.
 		if msg.change == "empty" then
 			if focused[ws.output] == ws.num then
 				focused[ws.output] = nil
 			end
-			k.drop("tag", ws.output, ws.num)
+			k.retain("tag/" .. ws.output .. "/" .. ws.num)
 		elseif ws.focused then
 			set_mon(ws.output)
 			set_tag(ws.output, ws.num)
@@ -81,18 +80,18 @@ function feed(line)
 		if msg.change == "focus" or msg.change == "title" then
 			show(c)
 		elseif msg.change == "new" then
-			k.event("win_open", c.id, "mon=" .. (mon or "?"),
-			       "appid=" .. (c.app_id or ""))
+			k.publish("win_open/" .. c.id, "mon=" .. (mon or "?"),
+			          "appid=" .. (c.app_id or ""))
 			show(c)
 		elseif msg.change == "close" then
-			k.event("win_close", c.id)
+			k.publish("win_close/" .. c.id)
 		end
 		return
 	end
 
 	-- A mode event carries the name in `change` itself.
 	if msg.change ~= "" and msg.pango_markup ~= nil then
-		k.emit("mode", msg.change)
+		k.retain("mode", "name=" .. msg.change)
 	end
 end
 
@@ -107,7 +106,7 @@ function flush()
 	-- sway says what each entry is. Guessing from the fields instead
 	-- does not work: an output and a workspace both carry name, rect
 	-- and focused, so a workspace would be read as a monitor and its
-	-- number emitted as one.
+	-- number taken for one.
 	for _, e in ipairs(list) do
 		if e.type == "output" then
 			if e.focused then set_mon(e.name) end
@@ -116,7 +115,7 @@ function flush()
 				set_mon(e.output)
 				set_tag(e.output, e.num)
 			elseif focused[e.output] ~= e.num then
-				k.emit("tag", e.output, e.num, "state=occupied")
+				k.retain("tag/" .. e.output .. "/" .. e.num, "state=occupied")
 			end
 		end
 	end

@@ -1,4 +1,3 @@
--- (hole adapters-v2) emits v1 kinds.
 -- Hyprland. socket2 emits `event>>data`, comma separated, so a title holding
 -- a comma is ambiguous. Split only as far as the format guarantees.
 --
@@ -10,7 +9,7 @@
 -- attaches both sources to it, so they share this state.
 -- Off, like every window manager. The seed reads what is true now, the stream
 -- the changes.
-local claim = {"focus/*", "tags/*", "tag/*", "layout/*", "title/*", "app/*", "mode/*"}
+local claim = {"focus", "mode", "tags/*", "tag/*", "layout/*", "title/*", "app/*"}
 --source { name = "wm-seed", exec = "hyprctl monitors -j", retains = claim }
 --source { name = "wm", sock = "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock",
 --         retains = claim }
@@ -28,14 +27,14 @@ local function split2(s)
 end
 
 -- Focus moves. Saying the new tag is focused without saying the old one is
--- not leaves every tag ever visited focused, because the store keys on kind
--- plus subject and each tag is its own fact.
+-- not leaves every tag ever visited focused, because the store keys on the
+-- topic and each tag is its own value.
 local function set_tag(m, id)
 	local was = focused[m]
 	if was == id then return end
-	if was then k.emit("tag", m, was, "state=occupied") end
+	if was then k.retain("tag/" .. m .. "/" .. was, "state=occupied") end
 	focused[m] = id
-	k.emit("tag", m, id, "state=focused,occupied")
+	k.retain("tag/" .. m .. "/" .. id, "state=focused,occupied")
 end
 
 local function show(appid, text)
@@ -43,8 +42,8 @@ local function show(appid, text)
 		pending = {appid, text}
 		return
 	end
-	if appid and appid ~= "" then k.emit("app", mon, "id=" .. appid) end
-	if text then k.emit("title", mon, "text=" .. text) end
+	if appid and appid ~= "" then k.retain("app/" .. mon, "id=" .. appid) end
+	if text then k.retain("title/" .. mon, "text=" .. text) end
 end
 
 function feed(line)
@@ -64,7 +63,7 @@ function feed(line)
 	if ev == "focusedmon" then
 		local m, ws = split2(data)
 		mon = m
-		k.emit("focus", m)
+		k.retain("focus", "mon=" .. m)
 		if ws then set_tag(m, ws) end
 		if pending then
 			show(pending[1], pending[2])
@@ -76,12 +75,12 @@ function feed(line)
 		if mon then set_tag(mon, id) end
 
 	elseif ev == "destroyworkspacev2" then
-		-- Hyprland removes an empty workspace. The fact goes with it.
+		-- Hyprland removes an empty workspace. The value goes with it.
 		local id = split2(data)
 		for m, t in pairs(focused) do
 			if t == id then focused[m] = nil end
 		end
-		if mon then k.drop("tag", mon, id) end
+		if mon then k.retain("tag/" .. mon .. "/" .. id) end
 
 	elseif ev == "activewindow" then
 		show(split2(data))
@@ -91,15 +90,15 @@ function feed(line)
 		local addr, r1 = split2(data)
 		local ws, r2 = split2(r1 or "")
 		local appid, title = split2(r2 or "")
-		k.event("win_open", addr, "mon=" .. (mon or "?"),
-		       "tag=" .. ws, "appid=" .. appid)
+		k.publish("win_open/" .. addr, "mon=" .. (mon or "?"),
+		          "tag=" .. ws, "appid=" .. appid)
 		show(appid, title)
 
 	elseif ev == "closewindow" then
-		k.event("win_close", data)
+		k.publish("win_close/" .. data)
 
 	elseif ev == "submap" then
-		k.emit("mode", data ~= "" and data or "normal")
+		k.retain("mode", "name=" .. (data ~= "" and data or "normal"))
 	end
 end
 
@@ -114,11 +113,11 @@ function flush()
 	for _, m in ipairs(mons) do
 		if m.focused then
 			mon = m.name
-			k.emit("focus", m.name)
+			k.retain("focus", "mon=" .. m.name)
 		end
 		local ws = m.activeWorkspace
 		if ws then
-			k.emit("tag", m.name, ws.id, "state=focused,occupied")
+			k.retain("tag/" .. m.name .. "/" .. ws.id, "state=focused,occupied")
 		end
 	end
 	if pending and mon then
