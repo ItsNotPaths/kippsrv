@@ -21,12 +21,19 @@ run :: proc(l: ^Loop) {
 	hit: [MAX_POLL]posix.FD
 	from_srv: [MAX_POLL]bool
 
+	publish(l, src_status(l.src))   // every source starts online
+
 	l.running = true
 	for l.running {
 		nsrv := srv_fds(l.srv, fds[:])
 		nall := nsrv + src_fds(l.src, fds[nsrv:])
 
-		if posix.poll(&fds[0], posix.nfds_t(nall), src_timeout(l.src, now_ms())) > 0 {
+		// A projection the throttle held back needs a wake of its own.
+		now := now_ms()
+		wait := src_timeout(l.src, now)
+		if due := store_timeout(l.store, now); due >= 0 && (wait < 0 || due < wait) do wait = due
+
+		if posix.poll(&fds[0], posix.nfds_t(nall), wait) > 0 {
 			// Copy the ready descriptors out first. Dispatching can drop a
 			// consumer or end a source, and the set must not shift under us.
 			n := 0
@@ -44,7 +51,7 @@ run :: proc(l: ^Loop) {
 				}
 			}
 		}
-		reap()
+		src_reap(l.src)
 		publish(l, src_tick(l.src, now_ms()))
 		src_settle(l.src)
 		publish(l, src_status(l.src))

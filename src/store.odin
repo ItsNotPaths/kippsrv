@@ -87,6 +87,12 @@ store_each :: proc(st: ^Store, out: ^[dynamic]string) {
 	for k in st.order do append(out, st.facts[k])
 }
 
+// ms until a held-back projection is due, or -1 when nothing waits.
+store_timeout :: proc(st: ^Store, now: i64) -> i32 {
+	if !st.dirty || st.path == "" do return -1
+	return i32(max(0, st.wrote + PROJECT_MS - now))
+}
+
 // The projection. A script or a popup that will not hold a connection reads
 // this instead. Written once a pass, and only when something moved.
 store_project :: proc(st: ^Store) {

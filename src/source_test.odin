@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
 import "core:testing"
+import "core:time"
 
 // Drive a source set until every descriptor has ended, or the budget runs out.
 @(private = "file")
@@ -62,6 +63,31 @@ a_line_sent_reaches_the_child :: proc(t: ^testing.T) {
 	testing.expect(t, src_send(s, transmute([]byte)string("focus eDP-1 5\n")))
 	out := drain(&ss, 10)        // cat never ends, so a short budget
 	testing.expect_value(t, len(out), 2)
+}
+
+// A command sh cannot find is a failed run, not a normal end, so its source
+// goes offline. A command that runs and ends stays online.
+@(test)
+a_command_that_cannot_run_goes_offline :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+	ss := Sources{vm = v}
+	defer src_close(&ss)
+
+	a, ok := vm_load(v, "lua/wm/example.lua")
+	if !testing.expect(t, ok) do return
+	missing, _ := src_exec(&ss, "missing", "kippsrv-no-such-command", a)
+	ran, _ := src_exec(&ss, "ran", "true", a)
+	if !testing.expect(t, missing != nil && ran != nil) do return
+
+	drain(&ss)
+	for _ in 0 ..< 100 {
+		src_reap(&ss)
+		if missing.pid == 0 && ran.pid == 0 do break
+		time.sleep(10 * time.Millisecond)
+	}
+	testing.expect(t, missing.dead, "a command sh cannot find is offline")
+	testing.expect(t, !ran.dead, "a command that ran is not")
 }
 
 // The last record of a multi-line format has no terminator. EOF is the

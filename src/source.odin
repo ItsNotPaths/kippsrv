@@ -42,7 +42,7 @@ Source :: struct {
 	gap_due: i64,        // earliest next adapter call, when min_gap is set
 	due:     i64,        // next fire on the monotonic clock
 	done:    bool,       // ended for now
-	fails:   int,        // respawns in a row that did not start
+	fails:   int,        // runs in a row that did not start
 	dead:    bool,       // gone, until a restart works
 	said:    Status,     // what status/<name> last said
 	bus:     ^Bus,       // dbus only
@@ -82,12 +82,33 @@ THROTTLE :: Throttle{idle = 3, factor = 16, ceiling = 60_000, min_gap = 0}
 
 // A polling source forks once a period. Without this the process table fills
 // and fork eventually fails for the whole session.
-// (hole exec-fail :tags sources :sev gap) the exit status is dropped, so an exec that fails (127) reads as a normal end and its source never goes offline.
-reap :: proc() {
+//
+// sh exits 127 for a command it cannot find and 126 for one it cannot run.
+// That run did not start, the same as a fork that failed.
+src_reap :: proc(ss: ^Sources) {
 	for {
-		st: c.int
-		if posix.waitpid(-1, &st, {.NOHANG}) <= 0 do return
+		status: c.int
+		pid := posix.waitpid(-1, &status, {.NOHANG})
+		if pid <= 0 do return
+		for s in ss.list {
+			if s.pid != pid do continue
+			s.pid = 0
+			code := posix.WEXITSTATUS(status) if posix.WIFEXITED(status) else 0
+			if code == 126 || code == 127 {
+				failed_run(s)
+			} else {
+				s.fails = 0
+			}
+			break
+		}
 	}
+}
+
+// Three in a row and a source is dead. One that runs once has no second try.
+@(private = "file")
+failed_run :: proc(s: ^Source) {
+	s.fails += 1
+	if s.fails >= 3 || s.every == 0 do s.dead = true
 }
 
 // ------------------------------------------------------------------ time
@@ -557,13 +578,13 @@ src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 			// times running has nothing left to say.
 			if s.dead && s.kind != .Sock do continue
 
+			// An exec's run is judged when it exits, in src_reap.
 			if s.kind == .Sock ? redial(s) : respawn(s) {
-				s.fails = 0
+				if s.kind == .Sock do s.fails = 0
 				s.dead = false
 			} else {
-				s.fails += 1
+				failed_run(s)
 				s.due = now + s.every
-				if s.fails >= 3 do s.dead = true
 			}
 		}
 	}
