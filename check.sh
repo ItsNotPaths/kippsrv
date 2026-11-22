@@ -1,32 +1,34 @@
 #!/bin/sh
-# Start the daemon from a configuration, talk to it with socat, check what
+# Start the daemon on its own source files, talk to it with socat, check what
 # comes back. socat is a first-class client, so the checks use nothing else.
 set -u
 cd "$(dirname "$0")"
 
-SOCK=/tmp/kippsrv-check.$$.sock
-CONF=/tmp/kippsrv-check.$$.lua
+TOP=/tmp/kippsrv-check.$$
 FAILS=0
+SERVERS=""
 
-cleanup() { kill "$SRV" 2>/dev/null; rm -f "$SOCK" "$SOCK.state" "$CONF"; }
+cleanup() { kill $SERVERS 2>/dev/null; rm -rf "/tmp/kippsrv-check.$$"; }
 trap cleanup EXIT
 
-# The source ends long before the consumer connects. Everything the consumer
-# sees comes out of the store.
-cat > "$CONF" <<CONFEOF
-return {
-	socket = "$SOCK",
-	state  = "$SOCK.state",
-	sources = {
-		{ name = "wm", adapter = "lua/wm/dwl.lua",
-		  exec = "cat test/fmt/dwl.txt" },
-	},
+# A kippsrv with XDG folders under $1, so nothing of the session is read.
+# Source files go in $1/data/kippsrv/sources.d, the system folder, or
+# $1/config/kippsrv/sources.d, the user's.
+folders() {
+	mkdir -p "$1/run" "$1/config/kippsrv/sources.d" "$1/data/kippsrv/sources.d"
 }
-CONFEOF
+start() {
+	XDG_RUNTIME_DIR="$1/run" XDG_CONFIG_HOME="$1/config" XDG_DATA_DIRS="$1/data" \
+		./kippsrv 2>"$1/err" &
+	SERVERS="$SERVERS $!"
+	sleep 0.4
+}
 
-./kippsrv "$CONF" 2>/dev/null &
-SRV=$!
-sleep 0.4
+# A shipped file with its own sources taken out and the one given put in.
+adapter() {
+	grep -v '^source' "sources.d/$1"
+	printf '%s\n' "$2"
+}
 
 ask() {
 	printf '%s' "$1" | timeout 2 socat -t1 - UNIX-CONNECT:"$SOCK" 2>/dev/null
@@ -51,6 +53,44 @@ want_none() {
 		echo "ok    $name"
 	fi
 }
+
+said() {
+	name=$1 pattern=$2
+	if grep -q "$pattern" "$TOP/err"; then
+		echo "ok    $name"
+	else
+		echo "FAIL  $name (stderr has no '$pattern')"
+		FAILS=$((FAILS + 1))
+	fi
+}
+
+folders "$TOP"
+SYSTEM=$TOP/data/kippsrv/sources.d
+USER=$TOP/config/kippsrv/sources.d
+SOCK=$TOP/run/kippsrv.sock
+
+# The source ends long before the consumer connects. Everything the consumer
+# sees comes out of the store.
+adapter wm-dwl.lua 'source { name = "wm", exec = "cat test/fmt/dwl.txt",
+         retains = {"tag/*", "focus/*", "layout/*", "title/*", "app/*"} }' > "$SYSTEM/wm-dwl.lua"
+
+# A claim overlapping one already loaded refuses its file, and so does a taken
+# name. Files load in name order, so a-owner is first.
+echo 'source { name = "owner", retains = {"x/*"} }' > "$SYSTEM/a-owner.lua"
+echo 'source { name = "greedy", exec = "true", retains = {"x/y/*"} }' > "$USER/b-greedy.lua"
+echo 'source { name = "owner", exec = "true" }' > "$SYSTEM/c-twin.lua"
+
+# The user's file replaces the system file of the same name.
+echo 'source { name = "system-copy", exec = "true" }' > "$SYSTEM/d-same.lua"
+echo 'source { name = "user-copy", exec = "true" }' > "$USER/d-same.lua"
+
+# A retain outside the source's claim is dropped.
+cat > "$SYSTEM/e-stray.lua" <<'EOF2'
+source { name = "stray", exec = "echo go", retains = {"y/*"} }
+function feed(line) k.emit("z", "1", "a=b") end
+EOF2
+
+start "$TOP"
 
 want greeting   'version	2	broker=kippsrv'   ''
 want dump       'retain	tag/0/1	state=occupied' 'subscribe	*
@@ -80,25 +120,30 @@ publish	key/x
 want_none unheard '^publish'                'publish	key/x
 '
 
+said claim_refused   'b-greedy.lua was not loaded: .*a-owner.lua already claims'
+want_none claim_gone 'status/greedy'        'subscribe	status/*
+'
+said name_refused    'c-twin.lua was not loaded: .*a-owner.lua already names a source "owner"'
+want user_file       'status/user-copy'     'subscribe	status/*
+'
+want_none system_file 'status/system-copy'  'subscribe	status/*
+'
+said outside_claim   'source "stray" retained "z/1", outside its claim'
+want_none stray_dropped '^retain	z/'        'subscribe	*
+'
+
 # (hole requests) the v1 command seam is gone; v2 requests bring its check back.
 echo "skip  commands (v2 requests are not built)"
 
 # D-Bus needs a live session bus and busctl. Missing either is a skip.
 if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-	DSOCK=/tmp/kippsrv-dbus.$$.sock
-	DCONF=/tmp/kippsrv-dbus.$$.lua
-	cat > "$DCONF" <<DCONFEOF
-return {
-	socket = "$DSOCK",
-	sources = {
-		{ name = "test", adapter = "test/lua/dbus_echo.lua",
-		  dbus = {"type='signal',interface='org.kippsrv.Test'"} },
-	},
-}
-DCONFEOF
-	./kippsrv "$DCONF" 2>/dev/null &
-	DSRV=$!
-	sleep 0.4
+	D=$TOP/dbus
+	folders "$D"
+	{ echo "source { name = \"test\", retains = \"*\",
+         dbus = {\"type='signal',interface='org.kippsrv.Test'\"} }"
+	  cat test/lua/dbus_echo.lua; } > "$D/data/kippsrv/sources.d/test.lua"
+	start "$D"
+	DSOCK=$D/run/kippsrv.sock
 	{ printf 'subscribe\t*\n'; sleep 3; } | timeout 3 socat - UNIX-CONNECT:"$DSOCK" \
 		> /tmp/kippsrv-dbus.$$.out 2>/dev/null &
 	sleep 0.4
@@ -112,8 +157,7 @@ DCONFEOF
 		echo "FAIL  dbus signal not converted"
 		FAILS=$((FAILS + 1))
 	fi
-	kill "$DSRV" 2>/dev/null
-	rm -f "$DSOCK" "$DCONF" /tmp/kippsrv-dbus.$$.out
+	rm -f /tmp/kippsrv-dbus.$$.out
 else
 	echo "skip  dbus (no busctl or no session bus)"
 fi
@@ -122,26 +166,19 @@ fi
 # org.kde.StatusNotifierWatcher stops whatever holds it, which is not a thing
 # a test does.
 if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-	WSOCK=/tmp/kippsrv-w.$$.sock
-	WCONF=/tmp/kippsrv-w.$$.lua
+	W=$TOP/watcher
 	WNAME=org.kippsrv.CheckWatcher.p$$
-	cat > "$WCONF" <<WCONFEOF
-return {
-	socket = "$WSOCK",
-	state  = "$WSOCK.state",
-	sources = { { name = "watcher", watcher = true, bus_name = "$WNAME",
-	              adapter = "lua/tray/snw.lua" } },
-}
-WCONFEOF
-	./kippsrv "$WCONF" 2>/dev/null &
-	WSRV=$!
-	sleep 0.4
+	folders "$W"
+	adapter tray-snw.lua "source { name = \"watcher\", watcher = true, bus_name = \"$WNAME\",
+         retains = \"tray/*\" }" > "$W/data/kippsrv/sources.d/tray-snw.lua"
+	start "$W"
+	WSOCK=$W/run/kippsrv.sock
 	busctl --user call "$WNAME" /StatusNotifierWatcher \
 		org.kde.StatusNotifierWatcher RegisterStatusNotifierItem s org.test.Item \
 		>/dev/null 2>&1
 	got=$(busctl --user get-property "$WNAME" /StatusNotifierWatcher \
 		org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null)
-	tray=$(grep -c '^retain	tray/' "$WSOCK.state" 2>/dev/null || echo 0)
+	tray=$(grep -c '^retain	tray/' "$W/run/kippsrv.state" 2>/dev/null || echo 0)
 	if printf '%s' "$got" | grep -q 'org.test.Item'; then
 		echo "ok    watcher owns a name and registers an item"
 	else
@@ -154,8 +191,6 @@ WCONFEOF
 		echo "FAIL  no tray fact reached the store"
 		FAILS=$((FAILS + 1))
 	fi
-	kill "$WSRV" 2>/dev/null
-	rm -f "$WSOCK" "$WSOCK.state" "$WCONF"
 else
 	echo "skip  watcher (no busctl or no session bus)"
 fi
@@ -163,36 +198,27 @@ fi
 # The notification server owns a test name, never org.freedesktop.Notifications.
 # Taking that one stops whatever holds it, which is not a thing a test does.
 if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-	NSOCK=/tmp/kippsrv-n.$$.sock
-	NCONF=/tmp/kippsrv-n.$$.lua
+	N=$TOP/notify
 	NNAME=org.kippsrv.CheckNotify.p$$
 	NPATH=/org/freedesktop/Notifications
 	NIFACE=org.freedesktop.Notifications
-	cat > "$NCONF" <<NCONFEOF
-return {
-	socket = "$NSOCK",
-	state  = "$NSOCK.state",
-	sources = {
-		-- The tray comes first on purpose. Every D-Bus source is offered
-		-- the servers' state, and the first one to take it clears the flag,
-		-- so a notification would reach the tray's adapter and stop there.
-		{ name = "tray", watcher = true, bus_name = "$NNAME.w",
-		  adapter = "lua/tray/snw.lua" },
-		{ name = "notify", notify = true, bus_name = "$NNAME",
-		  adapter = "lua/notify/fdo.lua" },
-	},
-}
-NCONFEOF
-	./kippsrv "$NCONF" 2>/dev/null &
-	NSRV=$!
-	sleep 0.4
+	folders "$N"
+	# The tray loads first on purpose: files load in name order. Every D-Bus
+	# source is offered the servers' state, and a notification must still
+	# reach only its own adapter.
+	adapter tray-snw.lua "source { name = \"tray\", watcher = true, bus_name = \"$NNAME.w\",
+         retains = \"tray/*\" }" > "$N/data/kippsrv/sources.d/a-tray.lua"
+	adapter notify-fdo.lua "source { name = \"notify\", notify = true, bus_name = \"$NNAME\",
+         retains = \"notif/*\" }" > "$N/data/kippsrv/sources.d/b-notify.lua"
+	start "$N"
+	NSTATE=$N/run/kippsrv.state
 
 	# The reply is the id, and the id is what everything else names.
 	id=$(busctl --user call "$NNAME" "$NPATH" "$NIFACE" Notify \
 		'susssasa{sv}i' grim 0 camera "Screenshot saved" body 0 1 urgency y 2 0 \
 		2>/dev/null | awk '{print $2}')
 	sleep 0.4
-	line=$(grep '^retain	notif/' "$NSOCK.state" 2>/dev/null | head -1)
+	line=$(grep '^retain	notif/' "$NSTATE" 2>/dev/null | head -1)
 
 	if [ "$id" = "1" ]; then
 		echo "ok    Notify answers with an id"
@@ -211,7 +237,7 @@ NCONFEOF
 	busctl --user call "$NNAME" "$NPATH" \
 		place.paths.kippsrv.Notifications MarkAllRead >/dev/null 2>&1
 	sleep 0.4
-	if grep '^retain	notif/' "$NSOCK.state" 2>/dev/null | grep -q 'read=1'; then
+	if grep '^retain	notif/' "$NSTATE" 2>/dev/null | grep -q 'read=1'; then
 		echo "ok    a notification can be marked read"
 	else
 		echo "FAIL  MarkAllRead left nothing read"
@@ -221,20 +247,17 @@ NCONFEOF
 	busctl --user call "$NNAME" "$NPATH" "$NIFACE" \
 		CloseNotification u "${id:-1}" >/dev/null 2>&1
 	sleep 0.4
-	if ! grep -q '^retain	notif/' "$NSOCK.state" 2>/dev/null; then
+	if ! grep -q '^retain	notif/' "$NSTATE" 2>/dev/null; then
 		echo "ok    closing one drops its fact"
 	else
 		echo "FAIL  the closed notification is still a fact"
 		FAILS=$((FAILS + 1))
 	fi
-
-	kill "$NSRV" 2>/dev/null
-	rm -f "$NSOCK" "$NSOCK.state" "$NCONF"
 else
 	echo "skip  notify (no busctl or no session bus)"
 fi
 
-if [ -s "$SOCK.state" ]; then
+if [ -s "$TOP/run/kippsrv.state" ]; then
 	echo "ok    projection written"
 else
 	echo "FAIL  projection missing or empty"

@@ -77,7 +77,7 @@ adapter_turns_a_foreign_line_into_facts :: proc(t: ^testing.T) {
 	v, _ := vm_open()
 	defer vm_close(v)
 
-	a, ok := vm_load(v, "lua/wm/example.lua")
+	a, ok := vm_load(v, "sources.d/wm-example.lua")
 	if !testing.expect(t, ok, "vm_load") do return
 	defer vm_unload(v, a)
 
@@ -95,7 +95,7 @@ a_missing_adapter_fails_without_dying :: proc(t: ^testing.T) {
 	v, _ := vm_open()
 	defer vm_close(v)
 
-	_, ok := vm_load(v, "lua/wm/nothing-here.lua")
+	_, ok := vm_load(v, "sources.d/wm-nothing-here.lua")
 	testing.expect(t, !ok, "a missing file must fail, not crash")
 }
 
@@ -164,7 +164,7 @@ a_subject_holding_equals_is_refused :: proc(t: ^testing.T) {
 passthrough_carries_a_kipp_program :: proc(t: ^testing.T) {
 	v, _ := vm_open()
 	defer vm_close(v)
-	a, ok := vm_load(v, "lua/kipp.lua")
+	a, ok := vm_load(v, "sources.d/kipp.lua")
 	if !testing.expect(t, ok, "vm_load") do return
 
 	fact := vm_feed(v, a, "win\t7\tws=1\tpos=2\ttitle=a=b")

@@ -39,16 +39,9 @@ main :: proc() {
 	}
 	defer vm_close(v)
 
-	// (hole source-files) takes a config path; v2 has no config file, and the socket and state paths are fixed.
-	path := len(os.args) > 1 ? os.args[1] : "config.lua"
-	cfg, cok := config_load(v, path)
+	cfg, cok := config_load(v)
 	if !cok do os.exit(1)
 	defer config_free(&cfg)
-
-	if cfg.socket == "" {
-		fmt.eprintfln("config: %s names no socket", path)
-		os.exit(1)
-	}
 
 	srv, sok := serve(cfg.socket, "version\t2\tbroker=kippsrv")
 	if !sok {
@@ -63,7 +56,7 @@ main :: proc() {
 
 	ss := Sources{vm = v}
 	defer src_close(&ss)
-	n := config_start(v, &ss, &cfg)
+	n := config_start(&ss, &cfg)
 	cmd_bind(&ss)
 
 	store.path = cfg.state

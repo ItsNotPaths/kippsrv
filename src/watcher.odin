@@ -4,7 +4,7 @@
 // application looks for this name once, at its own startup: if nobody owns it,
 // no icon ever registers.
 //
-// The kind those registrations become is named in lua/tray/snw.lua, not here.
+// The kind those registrations become is named in sources.d/tray-snw.lua, not here.
 // (hole kippbus-tray :tags bus) runs inside kippsrv; v2 moves it to kippbus tray, which prints tray/* lines itself.
 package kippsrv
 

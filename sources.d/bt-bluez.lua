@@ -1,4 +1,4 @@
--- (hole bus-adapters :tags lua :needs (lua-surface source-call kippbus-match)) reads sd-bus JSON inside kippsrv; v2 reads kippbus match.
+-- (hole bus-adapters :tags lua :needs (lua-surface kippbus-match)) reads sd-bus JSON inside kippsrv; v2 reads kippbus match.
 -- bluez, on the system bus. Two ways in, like every D-Bus adapter here: a
 -- GetManagedObjects poll for what is true now, and InterfacesAdded,
 -- InterfacesRemoved and PropertiesChanged for what changes after.
@@ -6,6 +6,17 @@
 -- A device is one object path, and everything about it arrives in pieces:
 -- the name with the device, the battery when it connects, one property at a
 -- time after that. The record is kept here and the whole fact is republished.
+-- The stream is first on purpose: a command is answered by the first source
+-- that names it, which has to be the one holding a bus. The seed reads what is
+-- paired now; the stream carries every connect, battery and scan result after.
+local claim = {"bt/*", "bt_radio/*"}
+source { name = "bt", system = true, retains = claim,
+         dbus = {"type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager'",
+                 "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties'"} }
+source { name = "bt-seed", retains = claim,
+         exec = "busctl --system --json=short call org.bluez / " ..
+                "org.freedesktop.DBus.ObjectManager GetManagedObjects" }
+
 local BLUEZ  = "org.bluez"
 local DEVICE = "org.bluez.Device1"
 local RADIO  = "org.bluez.Adapter1"
@@ -117,70 +128,68 @@ local function radio_path(id)
 	end
 end
 
-return {
-	feed = function(line)
-		local m = k.json(line)
-		if not m then return end
-		local body = m.body
+function feed(line)
+	local m = k.json(line)
+	if not m then return end
+	local body = m.body
 
-		if m.member == "InterfacesAdded" then
-			local path = v(body[1])
-			for iface, props in pairs(v(body[2]) or {}) do
+	if m.member == "InterfacesAdded" then
+		local path = v(body[1])
+		for iface, props in pairs(v(body[2]) or {}) do
+			take(path, iface, v(props))
+		end
+
+	elseif m.member == "InterfacesRemoved" then
+		local path = v(body[1])
+		for _, iface in ipairs(v(body[2]) or {}) do
+			gone(path, v(iface))
+		end
+
+	elseif m.member == "PropertiesChanged" then
+		take(m.path, v(body[1]), v(body[2]) or {})
+
+	elseif m.data then                    -- a GetManagedObjects poll
+		for path, ifaces in pairs(m.data[1] or {}) do
+			for iface, props in pairs(v(ifaces)) do
 				take(path, iface, v(props))
 			end
-
-		elseif m.member == "InterfacesRemoved" then
-			local path = v(body[1])
-			for _, iface in ipairs(v(body[2]) or {}) do
-				gone(path, v(iface))
-			end
-
-		elseif m.member == "PropertiesChanged" then
-			take(m.path, v(body[1]), v(body[2]) or {})
-
-		elseif m.data then                    -- a GetManagedObjects poll
-			for path, ifaces in pairs(m.data[1] or {}) do
-				for iface, props in pairs(v(ifaces)) do
-					take(path, iface, v(props))
-				end
-			end
 		end
-	end,
+	end
+end
 
-	-- The subject is the address, as it is on the wire. bluez holds the paths.
-	command = function(m)
-		local subj = (m.subj[1] or ""):upper()
+-- The subject is the address, as it is on the wire. bluez holds the paths.
+function command(m)
+	local subj = (m.subj[1] or ""):upper()
 
-		local member = on_device[m.kind]
-		if member then
-			local path = by_addr[subj]
-			if not path then
-				return nil, "badarg", "no device with that address"
-			end
-			return {dest = BLUEZ, path = path, iface = DEVICE, member = member}
+	local member = on_device[m.kind]
+	if member then
+		local path = by_addr[subj]
+		if not path then
+			return nil, "badarg", "no device with that address"
 		end
+		return {dest = BLUEZ, path = path, iface = DEVICE, member = member}
+	end
 
-		if m.kind == "FORGET" then
-			local path = by_addr[subj]
-			if not path then
-				return nil, "badarg", "no device with that address"
-			end
-			return {dest = BLUEZ, path = radio_path(dev[path].radio),
-			        iface = RADIO, member = "RemoveDevice",
-			        sig = "o", args = {path}}
+	if m.kind == "FORGET" then
+		local path = by_addr[subj]
+		if not path then
+			return nil, "badarg", "no device with that address"
 		end
+		return {dest = BLUEZ, path = radio_path(dev[path].radio),
+		        iface = RADIO, member = "RemoveDevice",
+		        sig = "o", args = {path}}
+	end
 
-		if m.kind == "SCAN" then
-			local on = subj == "ON"
-			if not on and subj ~= "OFF" then
-				return nil, "badarg", "SCAN takes on or off"
-			end
-			local path = radio_path(m.attr.radio)
-			if not path then
-				return nil, "badarg", "no such radio"
-			end
-			return {dest = BLUEZ, path = path, iface = RADIO,
-			        member = on and "StartDiscovery" or "StopDiscovery"}
+	if m.kind == "SCAN" then
+		local on = subj == "ON"
+		if not on and subj ~= "OFF" then
+			return nil, "badarg", "SCAN takes on or off"
 		end
-	end,
-}
+		local path = radio_path(m.attr.radio)
+		if not path then
+			return nil, "badarg", "no such radio"
+		end
+		return {dest = BLUEZ, path = path, iface = RADIO,
+		        member = on and "StartDiscovery" or "StopDiscovery"}
+	end
+end

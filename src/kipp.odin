@@ -495,7 +495,7 @@ read_conn :: proc(s: ^Server, fd: posix.FD) {
 			case "retain":
 				// Only a claim's owner retains, so nothing that connects can
 				// forge state for everything else that reads.
-				// (hole connect :tags broker :needs (claims)) a client may only publish; v2 takes connect <name>, retain within that claim, publish from anyone.
+				// (hole connect :tags broker) a client may only publish; v2 takes connect <name>, retain within that claim, publish from anyone.
 				send_error(s, fd, "noconnect", "", "retain needs connect")
 			case:
 				send_error(s, fd, "badverb", fmt.tprintf("verb=%s", m.verb),

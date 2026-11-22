@@ -68,11 +68,11 @@ adapters_convert_real_formats :: proc(t: ^testing.T) {
 	cases := []Case{
 		// The seed first. An event stream says what changed, not what is,
 		// so without it the adapter cannot attribute an event to a monitor.
-		{"hyprland seed",    "lua/wm/hypr.lua",       "test/fmt/hypr-monitors.json", 2},
-		{"dwl printstatus",  "lua/wm/dwl.lua",        "test/fmt/dwl.txt",            5},
-		{"nmcli -t",         "lua/net/nm.lua",        "test/fmt/nmcli-t.txt",        3},
-		{"pactl short",      "lua/audio/pw.lua",        "test/fmt/pactl-short.txt",    2},
-		{"brightnessctl -m", "lua/backlight/brightnessctl.lua", "test/fmt/brightnessctl.txt",  1},
+		{"hyprland seed",    "sources.d/wm-hypr.lua",       "test/fmt/hypr-monitors.json", 2},
+		{"dwl printstatus",  "sources.d/wm-dwl.lua",        "test/fmt/dwl.txt",            5},
+		{"nmcli -t",         "sources.d/net-nm.lua",        "test/fmt/nmcli-t.txt",        3},
+		{"pactl short",      "sources.d/audio-pw.lua",        "test/fmt/pactl-short.txt",    2},
+		{"brightnessctl -m", "sources.d/backlight-brightnessctl.lua", "test/fmt/brightnessctl.txt",  1},
 	}
 
 	v, _ := vm_open()
@@ -107,7 +107,7 @@ a_multi_line_record_needs_flush :: proc(t: ^testing.T) {
 	defer vm_close(v)
 
 	// feed only, no flush: the record has no terminator on its last line
-	feed_only, ok := vm_load(v, "lua/power/upower.lua")
+	feed_only, ok := vm_load(v, "sources.d/power-upower.lua")
 	if !testing.expect(t, ok) do return
 	{
 		src, _ := os.read_entire_file("test/fmt/upower.txt", context.temp_allocator)
@@ -122,7 +122,7 @@ a_multi_line_record_needs_flush :: proc(t: ^testing.T) {
 	}
 	vm_unload(v, feed_only)
 
-	a, _ := vm_load(v, "lua/power/upower.lua")
+	a, _ := vm_load(v, "sources.d/power-upower.lua")
 	defer vm_unload(v, a)
 	src, _ := os.read_entire_file("test/fmt/upower.txt", context.temp_allocator)
 	text := string(src)
@@ -152,7 +152,7 @@ json_converts_through_one_odin_call :: proc(t: ^testing.T) {
 	v, _ := vm_open()
 	defer vm_close(v)
 
-	a, ok := vm_load(v, "lua/wm/hypr.lua")
+	a, ok := vm_load(v, "sources.d/wm-hypr.lua")
 	if !testing.expect(t, ok) do return
 	defer vm_unload(v, a)
 
@@ -199,9 +199,9 @@ wm_adapters_share_one_vocabulary :: proc(t: ^testing.T) {
 	Seeded :: struct{name, adapter: string, fixtures: []string}
 	for c in ([]Seeded{
 		// One adapter, two sources: the seed and then the stream.
-		{"hypr", "lua/wm/hypr.lua", {"test/fmt/hypr-monitors.json",
+		{"hypr", "sources.d/wm-hypr.lua", {"test/fmt/hypr-monitors.json",
 		                             "test/fmt/hypr-socket2.txt"}},
-		{"dwl",  "lua/wm/dwl.lua",  {"test/fmt/dwl.txt"}},
+		{"dwl",  "sources.d/wm-dwl.lua",  {"test/fmt/dwl.txt"}},
 	}) {
 		out, ok := run_many(v, c.adapter, c.fixtures)
 		if !testing.expectf(t, ok, "%s: could not run", c.name) do continue
@@ -299,7 +299,7 @@ switching_tags_clears_the_last_one :: proc(t: ^testing.T) {
 	v, _ := vm_open()
 	defer vm_close(v)
 
-	out, ok := run_fixture(v, "lua/wm/hypr.lua", "test/fmt/hypr-switch.txt")
+	out, ok := run_fixture(v, "sources.d/wm-hypr.lua", "test/fmt/hypr-switch.txt")
 	if !testing.expect(t, ok) do return
 
 	// replay into a store, which is what a consumer effectively does

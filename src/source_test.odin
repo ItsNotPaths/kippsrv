@@ -34,7 +34,7 @@ exec_source_splits_lines :: proc(t: ^testing.T) {
 	ss := Sources{vm = v}
 	defer src_close(&ss)
 
-	a, ok := vm_load(v, "lua/wm/example.lua")
+	a, ok := vm_load(v, "sources.d/wm-example.lua")
 	if !testing.expect(t, ok) do return
 
 	_, spawned := src_exec(&ss, "printf", `printf 'focus eDP-1 3\n\n\nfocus HDMI-A-1 9\n'`, a)
@@ -55,7 +55,7 @@ a_line_sent_reaches_the_child :: proc(t: ^testing.T) {
 	ss := Sources{vm = v}
 	defer src_close(&ss)
 
-	a, ok := vm_load(v, "lua/wm/example.lua")
+	a, ok := vm_load(v, "sources.d/wm-example.lua")
 	if !testing.expect(t, ok) do return
 	s, spawned := src_exec(&ss, "cat", "cat", a)
 	if !testing.expect(t, spawned) do return
@@ -74,7 +74,7 @@ a_command_that_cannot_run_goes_offline :: proc(t: ^testing.T) {
 	ss := Sources{vm = v}
 	defer src_close(&ss)
 
-	a, ok := vm_load(v, "lua/wm/example.lua")
+	a, ok := vm_load(v, "sources.d/wm-example.lua")
 	if !testing.expect(t, ok) do return
 	missing, _ := src_exec(&ss, "missing", "kippsrv-no-such-command", a)
 	ran, _ := src_exec(&ss, "ran", "true", a)
@@ -99,7 +99,7 @@ eof_flushes_the_last_record :: proc(t: ^testing.T) {
 	ss := Sources{vm = v}
 	defer src_close(&ss)
 
-	a, ok := vm_load(v, "lua/power/upower.lua")
+	a, ok := vm_load(v, "sources.d/power-upower.lua")
 	if !testing.expect(t, ok) do return
 
 	_, spawned := src_exec(&ss, "cat", "cat test/fmt/upower.txt", a)
@@ -139,7 +139,7 @@ an_idle_source_backs_off :: proc(t: ^testing.T) {
 	ss := Sources{vm = v}
 	defer src_close(&ss)
 
-	a, _ := vm_load(v, "lua/wm/example.lua")
+	a, _ := vm_load(v, "sources.d/wm-example.lua")
 	s, ok := src_exec(&ss, "p", "true", a, 2000)
 	if !testing.expect(t, ok) do return
 
@@ -178,7 +178,7 @@ a_throttled_source_holds_the_newest_unit :: proc(t: ^testing.T) {
 	ss := Sources{vm = v}
 	defer src_close(&ss)
 
-	a, _ := vm_load(v, "lua/wm/example.lua")
+	a, _ := vm_load(v, "sources.d/wm-example.lua")
 	s, ok := src_exec(&ss, "p", "true", a, 0)
 	if !testing.expect(t, ok) do return
 	s.thr.min_gap = 10_000

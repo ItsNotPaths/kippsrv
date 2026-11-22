@@ -46,18 +46,16 @@ local function publish(props, sender)
 	-- that churns belongs on its own kind, or nowhere.
 end
 
-return {
-	feed = function(line)
-		local msg = k.json(line)
-		if not msg then return end
+function feed(line)
+	local msg = k.json(line)
+	if not msg then return end
 
-		if msg.member == "PropertiesChanged" then
-			local body = msg.body
-			local iface = body and body[1] and body[1].data
-			if iface ~= "org.mpris.MediaPlayer2.Player" then return end
-			publish(v(body[2]) or {}, msg.sender)
-		elseif msg.data then
-			publish(msg.data[1] or {}, "player")   -- a GetAll poll
-		end
-	end,
-}
+	if msg.member == "PropertiesChanged" then
+		local body = msg.body
+		local iface = body and body[1] and body[1].data
+		if iface ~= "org.mpris.MediaPlayer2.Player" then return end
+		publish(v(body[2]) or {}, msg.sender)
+	elseif msg.data then
+		publish(msg.data[1] or {}, "player")   -- a GetAll poll
+	end
+end

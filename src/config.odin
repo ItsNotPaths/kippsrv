@@ -1,25 +1,27 @@
-// Configuration is a language, not a file format.
+// Source files.
 //
-// The file returns a table. It runs in the same fenced VM as an adapter, so it
-// cannot read a file or open a socket either. Everything it can express is
-// here, and there is no key that means "run this".
+// Each file is Lua in the fenced VM, so it cannot read a file or open a socket
+// either. It declares its sources with source{} calls, and the functions it
+// defines are the adapter that reads them.
 package kippsrv
 
+import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import lua "vendor:lua/5.4"
 
 Config :: struct {
 	socket:  string,
 	state:   string,
-	sources: [dynamic]Src_Spec,
+	sources: [dynamic]Src_Spec,   // every source declared, claim-only ones too
 }
 
 Src_Spec :: struct {
 	name:    string,
-	adapter: string,
+	adapter: Adapter,    // the file that declared it
 	exec:    string,     // a command for sh -c, or
 	sock:    string,     // a path, or
 	dbus:    []string,   // match rules, or
@@ -30,6 +32,7 @@ Src_Spec :: struct {
 	notify:  bool,       // own org.freedesktop.Notifications on this bus
 	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
+	retains: []string,   // the topic patterns it may retain
 }
 
 @(private = "file")
@@ -99,20 +102,27 @@ field_bool :: proc(L: ^lua.State, key: cstring) -> bool {
 	return bool(lua.toboolean(L, -1))
 }
 
+// A list of strings. One string alone is a list of one.
 @(private = "file")
 field_list :: proc(L: ^lua.State, key: cstring) -> []string {
 	defer lua.pop(L, 1)
-	if lua.getfield(L, -1, key) != c.int(lua.TTABLE) do return nil
-
-	n := int(lua.rawlen(L, -1))
-	if n == 0 do return nil
-	out := make([]string, n)
-	for i in 1 ..= n {
-		lua.rawgeti(L, -1, lua.Integer(i))
-		out[i - 1] = expand(string(lua.tostring(L, -1)))
-		lua.pop(L, 1)
+	switch lua.getfield(L, -1, key) {
+	case c.int(lua.TSTRING):
+		out := make([]string, 1)
+		out[0] = strings.clone(string(lua.tostring(L, -1)))
+		return out
+	case c.int(lua.TTABLE):
+		n := int(lua.rawlen(L, -1))
+		if n == 0 do return nil
+		out := make([]string, n)
+		for i in 1 ..= n {
+			lua.rawgeti(L, -1, lua.Integer(i))
+			out[i - 1] = strings.clone(string(lua.tostring(L, -1)))
+			lua.pop(L, 1)
+		}
+		return out
 	}
-	return out
+	return nil
 }
 
 // How often a source may reach its adapter. Absent means the defaults.
@@ -134,97 +144,162 @@ field_throttle :: proc(L: ^lua.State) -> Throttle {
 	return t
 }
 
+// @api source{name=..., exec=..., retains=...}   declare a source of this file
+l_source :: proc "c" (L: ^lua.State) -> c.int {
+	context = runtime.default_context()
+	if !lua.istable(L, 1) do lua.L_error(L, "source{} takes a table")
+	lua.settop(L, 1)
+
+	s: Src_Spec
+	s.name, _ = field_str(L, "name")
+	s.sock, _ = field_path(L, "sock")
+	s.exec, _ = field_str(L, "exec")
+	s.dbus = field_list(L, "dbus")
+	s.system = field_bool(L, "system")
+	s.timer = field_bool(L, "timer")
+	s.throttle = field_throttle(L)
+	s.watcher = field_bool(L, "watcher")
+	s.notify = field_bool(L, "notify")
+	s.bus_name, _ = field_str(L, "bus_name")
+	s.every = field_int(L, "every")
+	s.retains = field_list(L, "retains")
+
+	v := vm_of(L)
+	if v.declared != nil && s.name != "" {
+		append(v.declared, s)
+		return 0
+	}
+	spec_free(&s)
+	if v.declared != nil do lua.L_error(L, "source{} needs a name")
+	return 0
+}
+
+@(private = "file")
+spec_free :: proc(s: ^Src_Spec) {
+	delete(s.name); delete(s.exec); delete(s.sock); delete(s.bus_name)
+	for rule in s.dbus do delete(rule)
+	delete(s.dbus)
+	for pattern in s.retains do delete(pattern)
+	delete(s.retains)
+}
+
 // ---------------------------------------------------------------- loading
 
-// (hole source-files :tags sources :needs source-call) reads one config.lua; v2 scans /usr/share then ~/.config kippsrv/sources.d, same name overrides.
-config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
-	L := v.L
-	if lua.L_loadfile(L, strings.clone_to_cstring(path, context.temp_allocator)) != .OK ||
-	   lua.Status(lua.pcall(L, 0, 1, 0)) != .OK {
-		fmt.eprintfln("config: %s: %s", path, lua.tostring(L, -1))
-		lua.pop(L, 1)
-		return {}, false
+// Each file name once, from the first folder that holds it: the user's, then
+// each of XDG_DATA_DIRS in order. Sorted, so which of two clashing files loads
+// first does not depend on the file system.
+@(private = "file")
+source_files :: proc() -> []string {
+	config_home := os.get_env("XDG_CONFIG_HOME", context.temp_allocator)
+	if config_home == "" {
+		config_home = fmt.tprintf("%s/.config", os.get_env("HOME", context.temp_allocator))
 	}
-	defer lua.pop(L, 1)
+	data_dirs := os.get_env("XDG_DATA_DIRS", context.temp_allocator)
+	if data_dirs == "" do data_dirs = "/usr/local/share:/usr/share"
 
-	if !lua.istable(L, -1) {
-		fmt.eprintfln("config: %s must return a table", path)
-		return {}, false
+	folders := make([dynamic]string, context.temp_allocator)
+	append(&folders, fmt.tprintf("%s/kippsrv/sources.d", config_home))
+	for folder in strings.split(data_dirs, ":", context.temp_allocator) {
+		if folder != "" do append(&folders, fmt.tprintf("%s/kippsrv/sources.d", folder))
 	}
 
-	cfg.socket, _ = field_path(L, "socket")
-	cfg.state, _ = field_path(L, "state")
-	cfg.sources = make([dynamic]Src_Spec)
-
-	if lua.getfield(L, -1, "sources") != c.int(lua.TTABLE) {
-		lua.pop(L, 1)
-		return cfg, true            // a socket and nothing to read is legal
-	}
-	defer lua.pop(L, 1)
-
-	for i in 1 ..= int(lua.rawlen(L, -1)) {
-		lua.rawgeti(L, -1, lua.Integer(i))
-		defer lua.pop(L, 1)
-		if !lua.istable(L, -1) do continue
-
-		s: Src_Spec
-		s.name, _ = field_str(L, "name")
-		s.adapter, _ = field_path(L, "adapter")
-		s.sock, _ = field_path(L, "sock")
-		s.exec, _ = field_str(L, "exec")
-		s.dbus = field_list(L, "dbus")
-		s.system = field_bool(L, "system")
-		s.timer = field_bool(L, "timer")
-		s.throttle = field_throttle(L)
-		s.watcher = field_bool(L, "watcher")
-		s.notify = field_bool(L, "notify")
-		s.bus_name, _ = field_str(L, "bus_name")
-		s.every = field_int(L, "every")
-
-		if s.adapter == "" && !s.watcher && !s.notify {
-			fmt.eprintfln("config: source %d has no adapter, skipped", i)
-			continue
+	found := make(map[string]string, allocator = context.temp_allocator)
+	for folder in folders {
+		entries, err := os.read_all_directory_by_path(folder, context.temp_allocator)
+		if err != nil do continue
+		for entry in entries {
+			if entry.type == .Directory || !strings.has_suffix(entry.name, ".lua") do continue
+			if entry.name not_in found do found[entry.name] = entry.fullpath
 		}
-		if s.name == "" do s.name = s.adapter
+	}
+
+	names := make([dynamic]string, context.temp_allocator)
+	for name in found do append(&names, name)
+	slice.sort(names[:])
+	paths := make([]string, len(names), context.temp_allocator)
+	for name, i in names do paths[i] = found[name]
+	return paths
+}
+
+config_load :: proc(v: ^Vm) -> (cfg: Config, ok: bool) {
+	runtime_directory := os.get_env("XDG_RUNTIME_DIR", context.temp_allocator)
+	if runtime_directory == "" {
+		fmt.eprintln("kippsrv: XDG_RUNTIME_DIR is not set, so there is nowhere to put the socket.")
+		return {}, false
+	}
+	cfg.socket = fmt.aprintf("%s/kippsrv.sock", runtime_directory)
+	cfg.state = fmt.aprintf("%s/kippsrv.state", runtime_directory)
+	cfg.sources = make([dynamic]Src_Spec)
+	for path in source_files() do load_file(v, &cfg, path)
+	return cfg, true
+}
+
+// The first pair of patterns, one from each list, that can name one topic.
+@(private = "file")
+overlap :: proc(ours, theirs: []string) -> (string, string, bool) {
+	for p in ours do for q in theirs {
+		if matches(p, q) || matches(q, p) do return p, q, true
+	}
+	return "", "", false
+}
+
+// A file's sources are kept whole or not at all. A name already taken, or a
+// claim that overlaps another file's, refuses the file.
+@(private = "file")
+load_file :: proc(v: ^Vm, cfg: ^Config, path: string) {
+	declared := make([dynamic]Src_Spec)
+	defer delete(declared)
+	v.declared = &declared
+	adapter, ok := vm_load(v, path)
+	v.declared = nil
+	if !ok {
+		for &s in declared do spec_free(&s)
+		return
+	}
+
+	reason := ""
+	for s, i in declared {
+		for earlier in declared[:i] {
+			if earlier.name == s.name do reason = fmt.tprintf("it names %q twice", s.name)
+		}
+		for kept in cfg.sources {
+			if kept.name == s.name {
+				reason = fmt.tprintf("%s already names a source %q", v.paths[kept.adapter], s.name)
+			} else if ours, theirs, clash := overlap(s.retains, kept.retains); clash {
+				reason = fmt.tprintf("%s already claims %q, which overlaps %q",
+				                     v.paths[kept.adapter], theirs, ours)
+			}
+		}
+	}
+
+	if reason != "" {
+		fmt.eprintfln(
+`kippsrv: %s was not loaded: %s. A source name and a topic each have one
+         owner. [E-claim] See DIAGNOSTICS.md.`, path, reason)
+		vm_unload(v, adapter)
+		for &s in declared do spec_free(&s)
+		return
+	}
+	for &s in declared {
+		s.adapter = adapter
 		append(&cfg.sources, s)
 	}
-	return cfg, true
 }
 
 config_free :: proc(cfg: ^Config) {
 	delete(cfg.socket)
 	delete(cfg.state)
-	for s in cfg.sources {
-		delete(s.name); delete(s.adapter); delete(s.sock); delete(s.bus_name)
-		delete(s.exec)
-		for a in s.dbus do delete(a)
-		delete(s.dbus)
-	}
+	for &s in cfg.sources do spec_free(&s)
 	delete(cfg.sources)
 }
 
-// Start every source the configuration names. An adapter file is loaded once
-// however many sources name it, so a seed and its stream share one state.
-// (hole claims :tags sources :needs source-call) nothing owns a topic; v2 refuses a second file claiming the same topics, naming both.
-config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
-	loaded := make(map[string]Adapter, allocator = context.temp_allocator)
+// Start every source declared. A file's sources share its adapter, so a seed
+// and its stream share one state. A source that names nothing to run is a
+// claim for a program that connects itself.
+config_start :: proc(ss: ^Sources, cfg: ^Config) -> int {
 	started := 0
-
 	for spec in cfg.sources {
-		a: Adapter
-		seen := true
-		if spec.adapter != "" do a, seen = loaded[spec.adapter]
-		if !seen {
-			ok: bool
-			a, ok = vm_load(v, spec.adapter)
-			if !ok {
-				fmt.eprintfln("config: %s did not load, source %q skipped",
-				              spec.adapter, spec.name)
-				continue
-			}
-			loaded[spec.adapter] = a
-		}
-
+		a := spec.adapter
 		src: ^Source
 		ok: bool
 		switch {
@@ -252,7 +327,6 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			}
 			src, ok = src_timer(ss, spec.name, spec.every, a)
 		case:
-			fmt.eprintfln("config: source %q names no exec, sock or timer", spec.name)
 			continue
 		}
 		if !ok {
@@ -260,6 +334,7 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			continue
 		}
 		src.thr = spec.throttle
+		src.retains = spec.retains    // the config outlives the sources
 		started += 1
 	}
 	return started

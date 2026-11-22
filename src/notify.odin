@@ -8,8 +8,8 @@
 // The split is watcher.odin's. Odin answers the protocol -- the name, the
 // reply serials, the marshalling, the id -- and none of those need to ask Lua
 // anything, so no caller ever waits on the VM. What a notification *is* is
-// named in lua/notify/fdo.lua, the same way the tray's registrations are named
-// in lua/tray/snw.lua.
+// named in sources.d/notify-fdo.lua, the same way the tray's registrations are named
+// in sources.d/tray-snw.lua.
 //
 // Two members past the spec live on an interface of our own. Closing is in the
 // spec; being read is not, because a spec notification is a toast that appears
@@ -379,7 +379,7 @@ notify_start :: proc(d: ^Source, name := NOTIFY_NAME) -> bool {
 
 // What is live, as one JSON line for an adapter to name. Same contract as
 // watcher_pass: these are facts about a D-Bus interface, and the kind they
-// become is lua/notify/fdo.lua's to decide.
+// become is sources.d/notify-fdo.lua's to decide.
 notify_pass :: proc(vm: ^Vm, a: Adapter, out: ^[dynamic]Emit, src: int) {
 	// Every D-Bus source is offered this, and the first one clears the flag.
 	// Only the source that started the server has an adapter that knows what

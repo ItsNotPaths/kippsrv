@@ -48,7 +48,7 @@ bench_layers :: proc(t: ^testing.T) {
 	{
 		v, _ := vm_open()
 		defer vm_close(v)
-		a, ok := vm_load(v, "lua/wm/example.lua")
+		a, ok := vm_load(v, "sources.d/wm-example.lua")
 		if !testing.expect(t, ok) do return
 
 		start := time.tick_now()
@@ -63,7 +63,7 @@ bench_layers :: proc(t: ^testing.T) {
 	{
 		v, _ := vm_open()
 		defer vm_close(v)
-		a, _ := vm_load(v, "lua/wm/hypr.lua")
+		a, _ := vm_load(v, "sources.d/wm-hypr.lua")
 
 		start := time.tick_now()
 		for _ in 0 ..< N {

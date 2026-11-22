@@ -71,7 +71,7 @@ run :: proc(l: ^Loop) {
 @(private = "file")
 publish :: proc(l: ^Loop, es: []Emit) {
 	for e in es {
-		// (hole claims) a source may retain any topic; v2 refuses a retain outside the source's claim.
+		if !src_may_retain(l.src, e) do continue
 		line := store_apply(l.store, e)
 		if line == "" do continue
 		broadcast(l.srv, line)

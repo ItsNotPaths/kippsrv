@@ -33,6 +33,7 @@ Vm :: struct {
 	mem:     ^Mem,            // what the script has allocated
 	paths:   map[Adapter]string,   // which file each adapter came from
 	running: Adapter,              // whose call we are inside, for diagnostics
+	declared: ^[dynamic]Src_Spec,  // where source{} calls go while a file loads, or nil
 }
 
 // The sandbox does not stop `while true do end`. This does.
@@ -82,7 +83,6 @@ on_step :: proc "c" (L: ^lua.State, ar: ^lua.Debug) {
 	if v.budget <= 0 do lua.L_error(L, "script ran too long and was stopped")
 }
 
-@(private = "file")
 vm_of :: proc "contextless" (L: ^lua.State) -> ^Vm {
 	return (^^Vm)(lua.getextraspace(L))^
 }
@@ -353,6 +353,9 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 	lua.pushcfunction(L, l_drop);  lua.setfield(L, -2, "drop")
 	lua.setglobal(L, "k")
 
+	lua.pushcfunction(L, l_source)
+	lua.setglobal(L, "source")
+
 	return v, true
 }
 
@@ -373,15 +376,24 @@ fail :: proc(v: ^Vm, what: string) -> bool {
 	return false
 }
 
-// A script returns a table of functions. `feed` is the only one used today.
-// (hole source-call :tags lua) an adapter only returns functions; v2 files declare their sources with source{...} calls, commented out is off.
+// A file runs in its own globals, so its `feed` is not another file's. Reads
+// fall through to the shared ones, where `k` and `source` live. Those globals
+// are the adapter.
 vm_load :: proc(v: ^Vm, path: string) -> (a: Adapter, ok: bool) {
 	v.budget = SLICES
 	if lua.L_loadfile(v.L, cstr(path)) != .OK do return 0, fail(v, path)
-	if lua.Status(lua.pcall(v.L, 0, 1, 0)) != .OK do return 0, fail(v, path)
 
-	if !lua.istable(v.L, -1) {
-		fmt.eprintfln("lua: %s: must return a table", path)
+	lua.newtable(v.L)                  // the file's globals
+	lua.newtable(v.L)
+	lua.pushglobaltable(v.L)
+	lua.setfield(v.L, -2, "__index")
+	lua.setmetatable(v.L, -2)
+	lua.pushvalue(v.L, -1)
+	lua.setupvalue(v.L, -3, 1)         // the chunk's _ENV
+	lua.insert(v.L, -2)                // the globals under the chunk
+
+	if lua.Status(lua.pcall(v.L, 0, 0, 0)) != .OK {
+		fail(v, path)
 		lua.pop(v.L, 1)
 		return 0, false
 	}
@@ -404,7 +416,7 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 	lua.rawgeti(v.L, lua.REGISTRYINDEX, lua.Integer(a))
 	if lua.getfield(v.L, -1, cstr(fn)) != c.int(lua.TFUNCTION) {
 		lua.pop(v.L, 2)
-		// (hole passthrough :tags lua :needs (source-files lua-surface)) a source with no feed drops every line; v2 passes its kipp lines straight through.
+		// (hole passthrough :tags lua :needs (lua-surface)) a source with no feed drops every line; v2 passes its kipp lines straight through.
 		return nil        // an adapter need not define every function
 	}
 

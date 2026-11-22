@@ -1,9 +1,7 @@
 -- A timer source calls `tick`. It carries no data, so the adapter reads
 -- whatever it needs when asked.
 local n = 0
-return {
-	tick = function()
-		n = n + 1
-		k.event("beat", "test", "count=" .. n)
-	end,
-}
+function tick()
+	n = n + 1
+	k.event("beat", "test", "count=" .. n)
+end

@@ -18,6 +18,9 @@
 -- state. A source started under `bus_name` to test beside a live daemon is the
 -- one case where that lands on the other one, so test those two verbs by
 -- calling the members directly.
+-- Off: it owns org.freedesktop.Notifications, which another daemon may hold.
+--source { name = "notify", notify = true, retains = {"notif/*"} }
+
 local FDO  = "org.freedesktop.Notifications"
 local PATH = "/org/freedesktop/Notifications"
 local OURS = "place.paths.kippsrv.Notifications"
@@ -25,45 +28,43 @@ local OURS = "place.paths.kippsrv.Notifications"
 -- The spec numbers urgency and every consumer wants the word.
 local URGENCY = {[0] = "low", [1] = "normal", [2] = "critical"}
 
-return {
-	feed = function(line)
-		local m = k.json(line)
-		if not m then return end
+function feed(line)
+	local m = k.json(line)
+	if not m then return end
 
-		-- A closed notification is gone, not stale. Say so, or the store
-		-- keeps handing out the last thing anybody knew about it.
-		for _, id in ipairs(m.dropped or {}) do
-			k.drop("notif", tostring(id))
+	-- A closed notification is gone, not stale. Say so, or the store
+	-- keeps handing out the last thing anybody knew about it.
+	for _, id in ipairs(m.dropped or {}) do
+		k.drop("notif", tostring(id))
+	end
+
+	for _, one in ipairs(m.live or {}) do
+		k.emit("notif", tostring(one.id),
+		       "app=" .. (one.app or ""),
+		       "summary=" .. (one.summary or ""),
+		       "body=" .. (one.body or ""),
+		       "icon=" .. (one.icon or ""),
+		       "action=" .. (one.action or ""),
+		       "exec=" .. (one.exec or ""),
+		       "urgency=" .. (URGENCY[one.urgency] or "normal"),
+		       "read=" .. (one.read and "1" or "0"))
+	end
+end
+
+function command(m)
+	if m.kind == "NOTIFY-CLOSE" then
+		local id = tonumber(m.subj[1] or "")
+		if not id then
+			return nil, "badarg", "NOTIFY-CLOSE takes a notification id"
 		end
+		return {dest = FDO, path = PATH, iface = FDO,
+		        member = "CloseNotification", sig = "u", args = {tostring(id)}}
+	end
 
-		for _, one in ipairs(m.live or {}) do
-			k.emit("notif", tostring(one.id),
-			       "app=" .. (one.app or ""),
-			       "summary=" .. (one.summary or ""),
-			       "body=" .. (one.body or ""),
-			       "icon=" .. (one.icon or ""),
-			       "action=" .. (one.action or ""),
-			       "exec=" .. (one.exec or ""),
-			       "urgency=" .. (URGENCY[one.urgency] or "normal"),
-			       "read=" .. (one.read and "1" or "0"))
-		end
-	end,
+	if m.kind == "NOTIFY-READ" then
+		return {dest = FDO, path = PATH, iface = OURS,
+		        member = "MarkAllRead", sig = "", args = {}}
+	end
 
-	command = function(m)
-		if m.kind == "NOTIFY-CLOSE" then
-			local id = tonumber(m.subj[1] or "")
-			if not id then
-				return nil, "badarg", "NOTIFY-CLOSE takes a notification id"
-			end
-			return {dest = FDO, path = PATH, iface = FDO,
-			        member = "CloseNotification", sig = "u", args = {tostring(id)}}
-		end
-
-		if m.kind == "NOTIFY-READ" then
-			return {dest = FDO, path = PATH, iface = OURS,
-			        member = "MarkAllRead", sig = "", args = {}}
-		end
-
-		return nil
-	end,
-}
+	return nil
+end

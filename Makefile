@@ -70,7 +70,7 @@ lint-api:
 	echo "ok    script surface is $$n functions"
 
 # An adapter may emit only the kinds its domain declares.
-# (hole vocab-claims :tags lint :needs claims) checks lua/ against vocab/*.txt; v2 checks claims at load, and lint-core takes its kinds from them.
+# (hole vocab-claims :tags lint) checks sources.d/ against vocab/*.txt; v2 checks claims at load, and lint-core takes its kinds from them.
 lint-vocab:
 	@./vocab.sh
 

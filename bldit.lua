@@ -19,8 +19,8 @@ dependencies = {
 local function install()
   return os.execute(
     "install -Dm755 kippsrv " .. prefix .. "/bin/kippsrv && " ..
-    "mkdir -p " .. prefix .. "/share/kippsrv/lua && " ..
-    "cp -r lua/. " .. prefix .. "/share/kippsrv/lua/")
+    "mkdir -p " .. prefix .. "/share/kippsrv/sources.d && " ..
+    "cp sources.d/*.lua " .. prefix .. "/share/kippsrv/sources.d/")
 end
 
 local function uninstall()

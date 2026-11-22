@@ -45,6 +45,8 @@ Source :: struct {
 	fails:   int,        // runs in a row that did not start
 	dead:    bool,       // gone, until a restart works
 	said:    Status,     // what status/<name> last said
+	retains: []string,   // its claim, borrowed from the config
+	refused: bool,       // a retain outside the claim was reported
 	bus:     ^Bus,       // dbus only
 }
 
@@ -538,6 +540,26 @@ src_settle :: proc(ss: ^Sources) {
 	}
 }
 
+// A retain must fall inside its source's claim. kippsrv's own lines, source
+// 0, and events need none.
+src_may_retain :: proc(ss: ^Sources, e: Emit) -> bool {
+	if e.src == 0 || !strings.has_prefix(e.line, "retain\t") do return true
+	for s in ss.list {
+		if s.id != e.src do continue
+		topic := topic_of(e.line)
+		for pattern in s.retains do if matches(pattern, topic) do return true
+		if !s.refused {
+			s.refused = true
+			fmt.eprintfln(
+`kippsrv: source %q retained %q, outside its claim, and it was dropped. Its
+         file's retains list does not cover what its adapter writes.
+         [E-claim] See DIAGNOSTICS.md.`, s.name, topic)
+		}
+		return false
+	}
+	return true
+}
+
 // The status/<name> lines that changed since the last pass. A dead source is
 // offline, so a reader knows its facts are last-known.
 src_status :: proc(ss: ^Sources) -> []Emit {
@@ -548,7 +570,7 @@ src_status :: proc(ss: ^Sources) -> []Emit {
 		topic := fmt.tprintf("status/%s", s.name)
 		if !is_topic(topic) do continue
 		s.said = now
-		// (hole status-claim :tags broker :needs claims) names no claim; v2 adds retains=<pattern>, so a reader matches its own topics against it.
+		// (hole status-claim :tags broker) names no claim; v2 adds retains=<pattern>, so a reader matches its own topics against it.
 		append(&out, Emit{fmt.tprintf("retain\t%s\tstate=%s", topic, STATUS_WORD[now]), 0})
 	}
 	return out[:]
