@@ -100,26 +100,40 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 	n := lua.gettop(L)
 	if n < 1 do return 0
 
+	// (hole lua-surface) the subject fields join the kind into the topic; v2 takes the topic whole.
+	topic := strings.builder_make(context.temp_allocator)
+	strings.write_string(&topic, string(lua.L_checkstring(L, 1)))
+	payload := make([dynamic]string, context.temp_allocator)
+	for i in 2 ..= n {
+		field := string(lua.tostring(L, i))
+		if strings.index_byte(field, '=') >= 0 {
+			append(&payload, field)
+		} else {
+			strings.write_byte(&topic, '/')
+			strings.write_string(&topic, field)
+		}
+	}
+
 	o: Out
-	begin(&o, string(lua.L_checkstring(L, 1)))
-	for i in 2 ..= n do add(&o, "%s", string(lua.tostring(L, i)))
+	begin(&o, "publish" if kind == .Event else "retain")
+	add(&o, "%s", strings.to_string(topic))
+	if kind != .Drop do for field in payload do add(&o, "%s", field)
 
 	v := vm_of(L)
 
-	// Only kipp reaches the socket. A kind or a key that is not a word would
-	// be a line no reader can take apart.
-	built, parsed := parse(line_of(&o), context.temp_allocator)
-	bad := built.kind
-	if parsed && is_word(bad) {
-		bad = ""
-		for key in built.attr do if !is_word(key) do bad = key
-	}
-	if !parsed || bad != "" {
+	// Only kipp reaches the socket. A topic or a key that breaks the rules
+	// would be a line no reader can take apart.
+	built, _ := parse(line_of(&o), context.temp_allocator)
+	bad := ""
+	if !is_topic(built.topic) do bad = built.topic
+	for key in built.payload do if !is_word(key) do bad = key
+	if bad != "" {
 		fmt.eprintfln(
 `kippsrv: %s produced a line that is not kipp and it was dropped. This is a
          bug in that adapter file, not in your configuration.
-         [E-word] %q is not a word of lowercase letters, digits and
-         underscores. See DIAGNOSTICS.md.`,
+         [E-word] %q is not a topic whose kind is a word of lowercase
+         letters, digits and underscores, or not such a key. See
+         DIAGNOSTICS.md.`,
 			v.paths[v.running], bad)
 		return 0
 	}
@@ -130,7 +144,7 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 	// that kind. An event is never stored and needs no subject.
 	// (hole lua-surface) the subject check goes; a topic is one field.
 	if kind != .Event && n >= 2 {
-		if len(built.subj) == 0 {
+		if !strings.contains_rune(built.topic, '/') {
 			culprit := ""
 			for i in 2 ..= n {
 				f := string(lua.tostring(L, i))
@@ -146,7 +160,7 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
          maintains it, and quote this message.
          [E-subject] the field %q holds '=', so it read as an attribute and
          the fact kept no subject. See DIAGNOSTICS.md.`,
-				v.paths[v.running], built.kind, culprit)
+				v.paths[v.running], built.topic, culprit)
 			return 0
 		}
 	}
@@ -205,25 +219,21 @@ l_log :: proc "c" (L: ^lua.State) -> c.int {
 push_msg :: proc(L: ^lua.State, m: ^Msg) {
 	lua.newtable(L)
 
-	lua.pushstring(L, cstr(m.kind))
-	lua.setfield(L, -2, "kind")
+	lua.pushstring(L, cstr(m.verb))
+	lua.setfield(L, -2, "verb")
+
+	lua.pushstring(L, cstr(m.topic))
+	lua.setfield(L, -2, "topic")
 
 	lua.newtable(L)
-	for s, i in m.subj {
-		lua.pushstring(L, cstr(s))
-		lua.rawseti(L, -2, lua.Integer(i + 1))
-	}
-	lua.setfield(L, -2, "subj")
-
-	lua.newtable(L)
-	for key, val in m.attr {
+	for key, val in m.payload {
 		lua.pushstring(L, cstr(val))
 		lua.setfield(L, -2, cstr(key))
 	}
-	lua.setfield(L, -2, "attr")
+	lua.setfield(L, -2, "payload")
 }
 
-// @api k.parse(line) -> {kind, subj, attr} | nil
+// @api k.parse(line) -> {verb, topic, payload} | nil
 @(private = "file")
 l_parse :: proc "c" (L: ^lua.State) -> c.int {
 	context = runtime.default_context()
@@ -335,7 +345,7 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 	lua.sethook(L, on_step, lua.MASKCOUNT, STEPS)
 
 	lua.newtable(L)
-	// (hole lua-surface :tags lua :needs wire-v2) k.emit, k.event, k.drop build v1 lines; v2 is k.retain(topic, ...) and k.publish(topic, ...).
+	// (hole lua-surface :tags lua) k.emit, k.event, k.drop take v1's kind, subject, attributes; v2 is k.retain(topic, ...) and k.publish(topic, ...).
 	lua.pushcfunction(L, l_emit);  lua.setfield(L, -2, "emit")
 	lua.pushcfunction(L, l_log);   lua.setfield(L, -2, "log")
 	lua.pushcfunction(L, l_parse); lua.setfield(L, -2, "parse")
@@ -525,7 +535,7 @@ vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
 		fmt.eprintfln(
 `kippsrv: %s emitted %d facts while taking the %q command, and they were
          dropped. This is a bug in that adapter file.
-         [E-cmdemit] See DIAGNOSTICS.md.`, v.paths[a], len(v.emitted), m.kind)
+         [E-cmdemit] See DIAGNOSTICS.md.`, v.paths[a], len(v.emitted), m.topic)
 		clear(&v.emitted)
 	}
 

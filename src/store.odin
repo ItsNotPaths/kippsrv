@@ -28,22 +28,14 @@ Store :: struct {
 	wrote: i64,                 // when the projection last landed
 }
 
-// A fact is identified by its kind and its positional subject. The attributes
-// are the value, so `tag eDP-1 2 state=occupied` replaces
-// `tag eDP-1 2 state=focused` instead of sitting beside it.
+// A fact is identified by its topic. The payload is the value, so
+// `retain tag/eDP-1/2 state=occupied` replaces `retain tag/eDP-1/2
+// state=focused` instead of sitting beside it.
 @(private = "file")
-// (hole store-topic :tags broker :needs wire-v2) keys on kind plus subject fields; v2 keys on the topic.
 key_of :: proc(line: string, allocator := context.allocator) -> (string, bool) {
 	m, ok := parse(line, context.temp_allocator)
-	if !ok do return "", false
-
-	b := strings.builder_make(allocator)
-	strings.write_string(&b, m.kind)
-	for s in m.subj {
-		strings.write_byte(&b, '\t')
-		strings.write_string(&b, s)
-	}
-	return strings.to_string(b), true
+	if !ok || m.topic == "" do return "", false
+	return strings.clone(m.topic, allocator), true
 }
 
 store_close :: proc(st: ^Store) {
@@ -64,7 +56,7 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 	if !ok do return ""
 	defer delete(k)
 
-	// (hole store-topic) drop is its own line in v1; in v2 a retain with no payload drops.
+	// (hole store-topic :tags broker) drop is its own line in v1; in v2 a retain with no payload drops.
 	if e.kind == .Drop {
 		old, had := st.facts[k]
 		if !had do return ""

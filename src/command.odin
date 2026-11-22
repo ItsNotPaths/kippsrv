@@ -51,8 +51,9 @@ cmd_bind :: proc(ss: ^Sources) {
 
 // (hole requests :tags broker :needs (subscribe exec-stdin source-call)) offers each command to every source in order; v2 adapters subscribe to request topics.
 command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
+	about := fmt.tprintf("topic=%s", m.topic)
 	if outbound == nil {
-		send_error(s, fd, "nosrc", m.kind, "nothing is configured")
+		send_error(s, fd, "nosrc", about, "nothing is configured")
 		return
 	}
 
@@ -62,19 +63,19 @@ command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 
 		switch v in what {
 		case Cmd_Fail:
-			send_error(s, fd, v.code, m.kind, v.msg)
+			send_error(s, fd, v.code, about, v.msg)
 		case Cmd_Bytes:
 			if !src_send(src, transmute([]byte)v.data) {
-				send_error(s, fd, "nosrc", m.kind,
+				send_error(s, fd, "nosrc", about,
 				           fmt.tprintf("%s is not listening", src.name))
 			}
 		case Cmd_Call:
 			if !dbus_call(src, v) {
-				send_error(s, fd, "nosrc", m.kind,
+				send_error(s, fd, "nosrc", about,
 				           fmt.tprintf("%s refused the call", src.name))
 			}
 		}
 		return
 	}
-	send_error(s, fd, "badcmd", m.kind, "no adapter takes this command")
+	send_error(s, fd, "badcmd", about, "no adapter takes this command")
 }

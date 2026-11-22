@@ -49,8 +49,7 @@ main :: proc() {
 		os.exit(1)
 	}
 
-	// (hole wire-v2) greets with version 1.
-	srv, sok := serve(cfg.socket, "version\t1\tkippsrv\tproto=1")
+	srv, sok := serve(cfg.socket, "version\t2\tbroker=kippsrv")
 	if !sok {
 		fmt.eprintfln(
 `kippsrv: cannot serve %s. Either another kippsrv is already running, or the

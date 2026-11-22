@@ -14,39 +14,38 @@ MAX_CONN   :: 32
 
 // ---------------------------------------------------------------- parsing
 
-// (hole wire-v2 :tags wire :sev blocker) Msg is v1's kind, subject, attributes; v2 follows kipp's SPEC.md, which waits on kipp spec-v2.
 Msg :: struct {
-	kind: string,
-	subj: [dynamic]string,
-	attr: map[string]string,
+	verb:    string,
+	topic:   string,
+	payload: map[string]string,
 }
 
-// Field 1 is the kind. Fields after it are positional subject up to the first
-// one holding '=', then key=value. A leading '@' field is reserved metadata.
+// Field 1 is the verb, field 2 the topic, and every field after is key=value.
+// A field after the topic with no '=' is skipped.
 parse :: proc(line: string, allocator := context.allocator) -> (m: Msg, ok: bool) {
-	m.subj = make([dynamic]string, allocator)
-	m.attr = make(map[string]string, allocator = allocator)
+	m.payload = make(map[string]string, allocator = allocator)
 
 	rest := line
 	for f in strings.split_iterator(&rest, "\t") {
-		if f == "" do continue
-		if m.kind == "" {
-			if strings.has_prefix(f, "@") do continue
-			m.kind = f
-			continue
-		}
-		if i := strings.index_byte(f, '='); i > 0 {
-			if len(m.attr) < MAX_FIELDS do m.attr[f[:i]] = f[i + 1:]
-		} else if len(m.subj) < MAX_FIELDS {
-			append(&m.subj, f)
+		switch {
+		case m.verb == "":  m.verb = f
+		case m.topic == "": m.topic = f
+		case:
+			i := strings.index_byte(f, '=')
+			if i > 0 && len(m.payload) < MAX_FIELDS do m.payload[f[:i]] = f[i + 1:]
 		}
 	}
-	return m, m.kind != ""
+	return m, m.verb != ""
 }
 
-// (hole wire-v2) case as direction is gone in v2.
-is_cmd :: proc(m: ^Msg) -> bool {
-	return len(m.kind) > 0 && m.kind[0] >= 'A' && m.kind[0] <= 'Z'
+// The first segment is a kind. The rest hold no control character, '*', '?'
+// or '['.
+is_topic :: proc(topic: string) -> bool {
+	kind, _, rest := strings.partition(topic, "/")
+	for ch in transmute([]byte)rest {
+		if ch < 0x20 || ch == 0x7f || ch == '*' || ch == '?' || ch == '[' do return false
+	}
+	return is_word(kind)
 }
 
 // A kind or a key: lowercase letters, digits and underscores, never a number.
@@ -320,7 +319,7 @@ send_to :: proc(s: ^Server, fd: posix.FD, line: string) {
 	}
 }
 
-// (hole subscribe :tags broker :needs wire-v2) every consumer gets every line; v2 sends a line only where a subscribe pattern matches it (fnmatch).
+// (hole subscribe :tags broker) every consumer gets every line; v2 sends a line only where a subscribe pattern matches it (fnmatch).
 broadcast :: proc(s: ^Server, line: string) {
 	i := 0
 	for i < len(s.conns) {
@@ -364,11 +363,12 @@ srv_flush :: proc(s: ^Server) {
 	}
 }
 
-send_error :: proc(s: ^Server, fd: posix.FD, code, cmd, msg: string) {
+// `about` is one key=value field naming what failed, or "".
+send_error :: proc(s: ^Server, fd: posix.FD, code, about, msg: string) {
 	o: Out
 	begin(&o, "error")
 	add(&o, "%s", code)
-	if cmd != "" do add(&o, "cmd=%s", cmd)
+	if about != "" do add(&o, "%s", about)
 	if msg != "" do add(&o, "msg=%s", msg)
 	if line, ok := str(&o); ok do send_to(s, fd, line)
 }
@@ -422,22 +422,24 @@ read_conn :: proc(s: ^Server, fd: posix.FD) {
 			case .Data: continue
 			}
 		case .Line:
-			m, good := parse(string(line[:n]), context.temp_allocator)
-			if !good {
-				send_error(s, fd, "badcmd", "", "unparsable line")
-				continue
+			m, _ := parse(string(line[:n]), context.temp_allocator)
+			switch m.verb {
+			case "publish":
+				if !is_topic(m.topic) {
+					send_error(s, fd, "badtopic", fmt.tprintf("topic=%s", m.topic),
+					           "not a topic")
+					continue
+				}
+				if s.on_cmd != nil do s.on_cmd(s, &m, fd)
+			case "retain":
+				// Only a claim's owner retains, so nothing that connects can
+				// forge state for everything else that reads.
+				// (hole connect :tags broker :needs (claims)) a client may only publish; v2 takes connect <name>, retain within that claim, publish from anyone.
+				send_error(s, fd, "noconnect", "", "retain needs connect")
+			case:
+				send_error(s, fd, "badverb", fmt.tprintf("verb=%s", m.verb),
+				           "unknown verb")
 			}
-			// A consumer sends commands, which are uppercase. It may not
-			// send a fact. Leaving this to each handler makes the direction
-			// rule a convention. Here it is a boundary, so nothing that
-			// connects can forge state for everything else that reads.
-			// (hole connect :tags broker :needs (wire-v2 claims)) a consumer may only send commands; v2 takes connect <name>, retain within that claim, publish from anyone.
-			if !is_cmd(&m) {
-				send_error(s, fd, "badcmd", m.kind,
-				           "a consumer sends commands, not facts")
-				continue
-			}
-			if s.on_cmd != nil do s.on_cmd(s, &m, fd)
 		}
 	}
 }

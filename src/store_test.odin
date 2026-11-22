@@ -15,18 +15,18 @@ a_repeat_is_silence :: proc(t: ^testing.T) {
 	st: Store
 	defer store_close(&st)
 
-	first := apply(&st, .State, "tag\teDP-1\t2\tstate=focused")
-	testing.expect_value(t, first, "tag\teDP-1\t2\tstate=focused")
+	first := apply(&st, .State, "retain\ttag/eDP-1/2\tstate=focused")
+	testing.expect_value(t, first, "retain\ttag/eDP-1/2\tstate=focused")
 
-	again := apply(&st, .State, "tag\teDP-1\t2\tstate=focused")
+	again := apply(&st, .State, "retain\ttag/eDP-1/2\tstate=focused")
 	testing.expect_value(t, again, "")             // identical, so nothing
 
-	moved := apply(&st, .State, "tag\teDP-1\t2\tstate=occupied")
-	testing.expect_value(t, moved, "tag\teDP-1\t2\tstate=occupied")
+	moved := apply(&st, .State, "retain\ttag/eDP-1/2\tstate=occupied")
+	testing.expect_value(t, moved, "retain\ttag/eDP-1/2\tstate=occupied")
 
-	// the key is kind plus subject, so a different tag is a different fact
-	other := apply(&st, .State, "tag\teDP-1\t3\tstate=focused")
-	testing.expect_value(t, other, "tag\teDP-1\t3\tstate=focused")
+	// the key is the topic, so a different tag is a different fact
+	other := apply(&st, .State, "retain\ttag/eDP-1/3\tstate=focused")
+	testing.expect_value(t, other, "retain\ttag/eDP-1/3\tstate=focused")
 
 	lines := make([dynamic]string, context.temp_allocator)
 	store_each(&st, &lines)
@@ -39,9 +39,9 @@ an_event_is_never_stored :: proc(t: ^testing.T) {
 	st: Store
 	defer store_close(&st)
 
-	apply(&st, .State, "focus\teDP-1")
-	testing.expect_value(t, apply(&st, .Event, "key_press\tsuper+3"), "key_press\tsuper+3")
-	testing.expect_value(t, apply(&st, .Event, "key_press\tsuper+3"), "key_press\tsuper+3")
+	apply(&st, .State, "retain\tfocus/eDP-1")
+	testing.expect_value(t, apply(&st, .Event, "publish\tkey_press/super+3"), "publish\tkey_press/super+3")
+	testing.expect_value(t, apply(&st, .Event, "publish\tkey_press/super+3"), "publish\tkey_press/super+3")
 
 	lines := make([dynamic]string, context.temp_allocator)
 	store_each(&st, &lines)
@@ -53,17 +53,17 @@ a_drop_removes_a_fact :: proc(t: ^testing.T) {
 	st: Store
 	defer store_close(&st)
 
-	apply(&st, .State, "mon\tHDMI-A-1\tw=1920")
-	apply(&st, .State, "mon\teDP-1\tw=2256")
+	apply(&st, .State, "retain\tmon/HDMI-A-1\tw=1920")
+	apply(&st, .State, "retain\tmon/eDP-1\tw=2256")
 	// A retraction goes out as its own kind, so a consumer can tell "forget
 	// this" from "this is true and has no attributes".
-	testing.expect_value(t, apply(&st, .Drop, "mon\tHDMI-A-1"), "drop\tmon\tHDMI-A-1")
-	testing.expect_value(t, apply(&st, .Drop, "mon\tHDMI-A-1"), "")   // already gone
+	testing.expect_value(t, apply(&st, .Drop, "retain\tmon/HDMI-A-1"), "drop\tmon/HDMI-A-1")
+	testing.expect_value(t, apply(&st, .Drop, "retain\tmon/HDMI-A-1"), "")   // already gone
 
 	lines := make([dynamic]string, context.temp_allocator)
 	store_each(&st, &lines)
 	testing.expect_value(t, len(lines), 1)
-	if len(lines) == 1 do testing.expect_value(t, lines[0], "mon\teDP-1\tw=2256")
+	if len(lines) == 1 do testing.expect_value(t, lines[0], "retain\tmon/eDP-1\tw=2256")
 }
 
 // The dump is stable, in the order facts were first seen.
@@ -72,17 +72,17 @@ the_dump_keeps_its_order :: proc(t: ^testing.T) {
 	st: Store
 	defer store_close(&st)
 
-	for line in ([]string{"mon\teDP-1", "focus\teDP-1", "tag\teDP-1\t2\tstate=focused"}) {
+	for line in ([]string{"retain\tmon/eDP-1", "retain\tfocus/eDP-1", "retain\ttag/eDP-1/2\tstate=focused"}) {
 		apply(&st, .State, line)
 	}
-	apply(&st, .State, "mon\teDP-1\tw=2256")       // an update, not a reorder
+	apply(&st, .State, "retain\tmon/eDP-1\tw=2256")       // an update, not a reorder
 
 	lines := make([dynamic]string, context.temp_allocator)
 	store_each(&st, &lines)
 	testing.expect_value(t, len(lines), 3)
 	if len(lines) == 3 {
-		testing.expect_value(t, lines[0], "mon\teDP-1\tw=2256")
-		testing.expect_value(t, lines[1], "focus\teDP-1")
+		testing.expect_value(t, lines[0], "retain\tmon/eDP-1\tw=2256")
+		testing.expect_value(t, lines[1], "retain\tfocus/eDP-1")
 	}
 }
 
@@ -95,14 +95,14 @@ the_projection_lands_atomically :: proc(t: ^testing.T) {
 	st := Store{path = path}
 	defer store_close(&st)
 
-	apply(&st, .State, "focus\teDP-1")
-	apply(&st, .State, "tag\teDP-1\t2\tstate=focused")
+	apply(&st, .State, "retain\tfocus/eDP-1")
+	apply(&st, .State, "retain\ttag/eDP-1/2\tstate=focused")
 	store_project(&st)
 
 	src, rerr := os.read_entire_file(path, context.temp_allocator)
 	if !testing.expect(t, rerr == nil, "the projection was not written") do return
 	fmt.printfln("\n--- %s\n%s", path, string(src))
-	testing.expect_value(t, string(src), "focus\teDP-1\ntag\teDP-1\t2\tstate=focused\n")
+	testing.expect_value(t, string(src), "retain\tfocus/eDP-1\nretain\ttag/eDP-1/2\tstate=focused\n")
 
 	// nothing moved, so nothing is rewritten
 	testing.expect(t, !st.dirty, "clean after a write")
@@ -121,12 +121,12 @@ a_dead_source_leaves_stale_facts :: proc(t: ^testing.T) {
 	st: Store
 	defer store_close(&st)
 
-	store_apply(&st, Emit{"bt\t00:11\tname=Buds\tstate=connected", .State, 7})
-	store_apply(&st, Emit{"net\twlp4s0\tstate=up", .State, 9})
+	store_apply(&st, Emit{"retain\tbt/00:11\tname=Buds\tstate=connected", .State, 7})
+	store_apply(&st, Emit{"retain\tnet/wlp4s0\tstate=up", .State, 9})
 
 	out := store_stale(&st, 7)
 	testing.expect_value(t, len(out), 1)
-	if len(out) == 1 do testing.expect_value(t, out[0], "stale\tbt\t00:11")
+	if len(out) == 1 do testing.expect_value(t, out[0], "stale\tbt/00:11")
 
 	// only that source, and only once
 	testing.expect_value(t, len(store_stale(&st, 7)), 0)
@@ -138,8 +138,8 @@ a_dead_source_leaves_stale_facts :: proc(t: ^testing.T) {
 
 	// the source comes back, and the return is news even though the value
 	// did not change
-	back := store_apply(&st, Emit{"bt\t00:11\tname=Buds\tstate=connected", .State, 7})
-	testing.expect_value(t, back, "bt\t00:11\tname=Buds\tstate=connected")
+	back := store_apply(&st, Emit{"retain\tbt/00:11\tname=Buds\tstate=connected", .State, 7})
+	testing.expect_value(t, back, "retain\tbt/00:11\tname=Buds\tstate=connected")
 
 	lines2 := make([dynamic]string, context.temp_allocator)
 	store_each(&st, &lines2)

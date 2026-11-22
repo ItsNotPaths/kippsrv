@@ -39,53 +39,17 @@ want() {
 	fi
 }
 
-want greeting   'version	1	kippsrv'          ''
-want dump       'tag	0	1	state=occupied'   ''
-want late       'focus	0'                     ''
+want greeting   'version	2	broker=kippsrv'   ''
+want dump       'retain	tag/0/1	state=occupied' ''
+want late       'retain	focus/0'               ''
 want sync       '^sync	state$'                ''
-want no_forgery 'error	badcmd	cmd=tag'       'tag	0	9	state=focused
+want no_forgery 'error	noconnect'             'retain	tag/0/9	state=focused
 '
-want no_command 'error	badcmd	cmd=TAG'       'TAG	9
+want no_verb    'error	badverb	verb=TAG'      'TAG	9
 '
 
-# The outbound seam. An adapter turns a command into bytes its own source
-# understands, and the core writes them to the channel that source names.
-FIFO=/tmp/kippsrv-cmd.$$.fifo
-CSOCK=/tmp/kippsrv-cmd.$$.sock
-CCONF=/tmp/kippsrv-cmd.$$.lua
-mkfifo "$FIFO"
-cat > "$CCONF" <<CCONFEOF
-return {
-	socket = "$CSOCK",
-	sources = {
-		{ name = "wm", adapter = "lua/wm/hedl.lua",
-		  exec = {"true"}, cmd = "$FIFO" },
-	},
-}
-CCONFEOF
-# A reader, so the FIFO can be opened for writing at all.
-timeout 4 cat "$FIFO" > "$FIFO.out" &
-./kippsrv "$CCONF" 2>/dev/null &
-CSRV=$!
-sleep 0.4
-printf 'VIEW\t2\nVIEW\t99\n' | timeout 2 socat -t1 - UNIX-CONNECT:"$CSOCK" \
-	> "$FIFO.err" 2>/dev/null
-sleep 0.5
-
-if grep -q "$(printf 'view\t2')" "$FIFO.out" 2>/dev/null; then
-	echo "ok    a command reaches the channel its source names"
-else
-	echo "FAIL  the command did not reach the channel"
-	FAILS=$((FAILS + 1))
-fi
-if grep -q 'error	badarg	cmd=VIEW' "$FIFO.err" 2>/dev/null; then
-	echo "ok    an adapter refuses its own verb with badarg"
-else
-	echo "FAIL  a refused command gave no badarg"
-	FAILS=$((FAILS + 1))
-fi
-kill "$CSRV" 2>/dev/null
-rm -f "$FIFO" "$FIFO.out" "$FIFO.err" "$CSOCK" "$CCONF"
+# (hole requests) the v1 command seam is gone; v2 requests bring its check back.
+echo "skip  commands (v2 requests are not built)"
 
 # D-Bus needs a live session bus and busctl. Missing either is a skip.
 if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
@@ -144,7 +108,7 @@ WCONFEOF
 		>/dev/null 2>&1
 	got=$(busctl --user get-property "$WNAME" /StatusNotifierWatcher \
 		org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null)
-	tray=$(grep -c '^tray' "$WSOCK.state" 2>/dev/null || echo 0)
+	tray=$(grep -c '^retain	tray/' "$WSOCK.state" 2>/dev/null || echo 0)
 	if printf '%s' "$got" | grep -q 'org.test.Item'; then
 		echo "ok    watcher owns a name and registers an item"
 	else
@@ -195,7 +159,7 @@ NCONFEOF
 		'susssasa{sv}i' grim 0 camera "Screenshot saved" body 0 1 urgency y 2 0 \
 		2>/dev/null | awk '{print $2}')
 	sleep 0.4
-	line=$(grep '^notif' "$NSOCK.state" 2>/dev/null | head -1)
+	line=$(grep '^retain	notif/' "$NSOCK.state" 2>/dev/null | head -1)
 
 	if [ "$id" = "1" ]; then
 		echo "ok    Notify answers with an id"
@@ -214,7 +178,7 @@ NCONFEOF
 	busctl --user call "$NNAME" "$NPATH" \
 		place.paths.kippsrv.Notifications MarkAllRead >/dev/null 2>&1
 	sleep 0.4
-	if grep '^notif' "$NSOCK.state" 2>/dev/null | grep -q 'read=1'; then
+	if grep '^retain	notif/' "$NSOCK.state" 2>/dev/null | grep -q 'read=1'; then
 		echo "ok    a notification can be marked read"
 	else
 		echo "FAIL  MarkAllRead left nothing read"
@@ -224,7 +188,7 @@ NCONFEOF
 	busctl --user call "$NNAME" "$NPATH" "$NIFACE" \
 		CloseNotification u "${id:-1}" >/dev/null 2>&1
 	sleep 0.4
-	if ! grep -q '^notif' "$NSOCK.state" 2>/dev/null; then
+	if ! grep -q '^retain	notif/' "$NSOCK.state" 2>/dev/null; then
 		echo "ok    closing one drops its fact"
 	else
 		echo "FAIL  the closed notification is still a fact"

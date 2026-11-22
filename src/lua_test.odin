@@ -28,7 +28,7 @@ emit_joins_fields :: proc(t: ^testing.T) {
 
 	testing.expect(t, vm_eval(v, `k.emit("tag", "eDP-1", "2", "state=focused")`))
 	testing.expect_value(t, len(v.emitted), 1)
-	testing.expect_value(t, v.emitted[0].line, "tag\teDP-1\t2\tstate=focused")
+	testing.expect_value(t, v.emitted[0].line, "retain\ttag/eDP-1/2\tstate=focused")
 }
 
 // A script hands over fields, never a line. So it cannot forge a second fact
@@ -40,7 +40,7 @@ emit_cannot_forge_a_line :: proc(t: ^testing.T) {
 
 	testing.expect(t, vm_eval(v, `k.emit("title", "0x1", "t=a\tb\nfocus\tHDMI-1")`))
 	testing.expect_value(t, len(v.emitted), 1)
-	testing.expect_value(t, v.emitted[0].line, "title\t0x1\tt=abfocusHDMI-1")
+	testing.expect_value(t, v.emitted[0].line, "retain\ttitle/0x1\tt=abfocusHDMI-1")
 }
 
 @(test)
@@ -49,28 +49,27 @@ parse_reaches_lua :: proc(t: ^testing.T) {
 	defer vm_close(v)
 
 	testing.expect(t, vm_eval(v, `
-		local m = k.parse("tag\teDP-1\t2\tstate=focused,occupied")
-		if m.kind ~= "tag" then error("kind " .. tostring(m.kind)) end
-		if m.subj[1] ~= "eDP-1" then error("subj1") end
-		if m.subj[2] ~= "2" then error("subj2") end
-		if m.attr.state ~= "focused,occupied" then error("attr") end
+		local m = k.parse("retain\ttag/eDP-1/2\tstate=focused,occupied")
+		if m.verb ~= "retain" then error("verb " .. tostring(m.verb)) end
+		if m.topic ~= "tag/eDP-1/2" then error("topic") end
+		if m.payload.state ~= "focused,occupied" then error("payload") end
 		if k.parse("") ~= nil then error("empty line should be nil") end
 	`))
 }
 
 @(test)
 parse_round_trips_the_wire :: proc(t: ^testing.T) {
-	m, ok := parse("net\twifi\tssid=hotel guest\turl=a=b", context.temp_allocator)
+	m, ok := parse("retain\tnet/wifi\tssid=hotel guest\turl=a=b", context.temp_allocator)
 	testing.expect(t, ok)
-	testing.expect_value(t, m.kind, "net")
-	testing.expect_value(t, m.attr["ssid"], "hotel guest")
-	testing.expect_value(t, m.attr["url"], "a=b")
+	testing.expect_value(t, m.verb, "retain")
+	testing.expect_value(t, m.topic, "net/wifi")
+	testing.expect_value(t, m.payload["ssid"], "hotel guest")
+	testing.expect_value(t, m.payload["url"], "a=b")
 
-	// a leading @ field is reserved and skipped
-	r, rok := parse("@t=1\tfocus\teDP-1", context.temp_allocator)
+	// a field after the topic with no '=' is skipped
+	r, rok := parse("publish\tfocus\teDP-1\tx=1", context.temp_allocator)
 	testing.expect(t, rok)
-	testing.expect_value(t, r.kind, "focus")
-	testing.expect_value(t, len(r.subj), 1)
+	testing.expect_value(t, len(r.payload), 1)
 }
 
 @(test)
@@ -84,8 +83,8 @@ adapter_turns_a_foreign_line_into_facts :: proc(t: ^testing.T) {
 
 	out := vm_feed(v, a, "focus eDP-1 3")
 	testing.expect_value(t, len(out), 2)
-	testing.expect_value(t, out[0].line, "focus\teDP-1")
-	testing.expect_value(t, out[1].line, "tag\teDP-1\t3\tstate=focused,occupied")
+	testing.expect_value(t, out[0].line, "retain\tfocus/eDP-1")
+	testing.expect_value(t, out[1].line, "retain\ttag/eDP-1/3\tstate=focused,occupied")
 
 	// a line the adapter does not understand produces nothing
 	testing.expect_value(t, len(vm_feed(v, a, "some other format")), 0)
@@ -154,61 +153,13 @@ a_subject_holding_equals_is_refused :: proc(t: ^testing.T) {
 	if len(v.emitted) == 1 {
 		m, ok := parse(v.emitted[0].line, context.temp_allocator)
 		testing.expect(t, ok)
-		testing.expect_value(t, len(m.subj), 1)
-		testing.expect_value(t, m.attr["name"], "home=wifi")
+		testing.expect_value(t, m.topic, "net/uuid-1")
+		testing.expect_value(t, m.payload["name"], "home=wifi")
 	}
 }
 
-// The outbound seam, with no source attached. An adapter answers in the terms
-// its own source understands, and the core never learns what VIEW means.
-@(test)
-command_translates_for_its_own_source :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	a, ok := vm_load(v, "lua/wm/hedl.lua")
-	if !testing.expect(t, ok, "vm_load") do return
-
-	view, _ := parse("VIEW\t2", context.temp_allocator)
-	bytes, is_bytes := vm_command(v, a, &view, "wm").(Cmd_Bytes)
-	testing.expect(t, is_bytes, "VIEW answers with bytes")
-	testing.expect_value(t, bytes.data, "view\t2\n")
-
-	over, _ := parse("VIEW\t99", context.temp_allocator)
-	bad, is_bad := vm_command(v, a, &over, "wm").(Cmd_Fail)
-	testing.expect(t, is_bad, "a tag out of range is refused")
-	testing.expect_value(t, bad.code, "badarg")
-
-	// Another adapter's verb. Nothing at all, so the next source is asked.
-	theirs, _ := parse("ACTIVATE\t:1.42/StatusNotifierItem", context.temp_allocator)
-	testing.expect(t, vm_command(v, a, &theirs, "wm") == nil, "not its command")
-}
-
-// The tray is the case that cannot be done any other way: the connection the
-// item registered on belongs to this process.
-@(test)
-command_describes_a_call :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	a, ok := vm_load(v, "lua/tray/snw.lua")
-	if !testing.expect(t, ok, "vm_load") do return
-
-	m, _ := parse("ACTIVATE\t:1.42/StatusNotifierItem\tx=10\ty=20",
-	              context.temp_allocator)
-	call, is_call := vm_command(v, a, &m, "tray").(Cmd_Call)
-	if !testing.expect(t, is_call, "ACTIVATE answers with a call") do return
-
-	testing.expect_value(t, call.dest, ":1.42")
-	testing.expect_value(t, call.path, "/StatusNotifierItem")
-	testing.expect_value(t, call.member, "Activate")
-	testing.expect_value(t, call.sig, "ii")
-	testing.expect_value(t, len(call.args), 2)
-	testing.expect_value(t, call.args[0], "10")
-	testing.expect_value(t, call.args[1], "20")
-}
-
 // A program that prints kipp needs no adapter of its own. Facts are stored,
-// a line marked event=1 is passed on without the mark, and a command goes
-// only to the source its prefix names.
+// and a line marked event=1 is passed on without the mark.
 @(test)
 passthrough_carries_a_kipp_program :: proc(t: ^testing.T) {
 	v, _ := vm_open()
@@ -219,20 +170,14 @@ passthrough_carries_a_kipp_program :: proc(t: ^testing.T) {
 	fact := vm_feed(v, a, "win\t7\tws=1\tpos=2\ttitle=a=b")
 	testing.expect_value(t, len(fact), 1)
 	testing.expect_value(t, fact[0].kind, Emit_Kind.State)
-	testing.expect_value(t, fact[0].line, "win\t7\tws=1\tpos=2\ttitle=a=b")
+	testing.expect_value(t, fact[0].line, "retain\twin/7\tws=1\tpos=2\ttitle=a=b")
 
 	event := vm_feed(v, a, "wm_done\tevent=1\tref=p17\tcmd=WM_LINE")
 	testing.expect_value(t, len(event), 1)
 	testing.expect_value(t, event[0].kind, Emit_Kind.Event)
-	testing.expect_value(t, event[0].line, "wm_done\tref=p17\tcmd=WM_LINE")
+	testing.expect_value(t, event[0].line, "publish\twm_done\tref=p17\tcmd=WM_LINE")
 
 	testing.expect_value(t, len(vm_feed(v, a, "sync\tstate")), 0)
-
-	line, _ := parse("WM_LINE\tref=p17", context.temp_allocator)
-	bytes, is_bytes := vm_command(v, a, &line, "wm").(Cmd_Bytes)
-	testing.expect(t, is_bytes, "its own prefix")
-	testing.expect_value(t, bytes.data, "WM_LINE\tref=p17\n")
-	testing.expect(t, vm_command(v, a, &line, "media") == nil, "another source's prefix")
 }
 
 // Only kipp reaches the socket.

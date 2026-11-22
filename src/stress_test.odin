@@ -35,6 +35,12 @@ run_many :: proc(v: ^Vm, adapter: string, fixtures: []string) -> ([]string, bool
 }
 
 @(private = "file")
+kind_of :: proc(topic: string) -> string {
+	kind, _, _ := strings.partition(topic, "/")
+	return kind
+}
+
+@(private = "file")
 run_fixture :: proc(v: ^Vm, adapter, fixture: string) -> ([]string, bool) {
 	a, ok := vm_load(v, adapter)
 	if !ok do return nil, false
@@ -87,8 +93,8 @@ adapters_convert_real_formats :: proc(t: ^testing.T) {
 		for line in out {
 			m, good := parse(line, context.temp_allocator)
 			testing.expectf(t, good, "%s: unparsable output %q", c.name, line)
-			testing.expectf(t, !strings.contains(m.kind, " "),
-			                "%s: kind %q holds a space", c.name, m.kind)
+			testing.expectf(t, is_topic(m.topic),
+			                "%s: %q is not a topic", c.name, m.topic)
 		}
 	}
 }
@@ -135,8 +141,8 @@ a_multi_line_record_needs_flush :: proc(t: ^testing.T) {
 
 	m, good := parse(done[0], context.temp_allocator)
 	testing.expect(t, good)
-	testing.expect_value(t, m.kind, "power")
-	testing.expect_value(t, m.attr["state"], "fully-charged")
+	testing.expect_value(t, kind_of(m.topic), "power")
+	testing.expect_value(t, m.payload["state"], "fully-charged")
 }
 
 // JSON. Lua has no decoder, so k.json is the fourth call in the API. The
@@ -198,8 +204,8 @@ a_binary_frame_is_read_in_lua :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(out), 3)
 	if len(out) < 3 do return
-	testing.expect_value(t, out[0].line, "tag\teDP-1\t1\tstate=focused,occupied")
-	testing.expect_value(t, out[1].line, "focus\teDP-1")
+	testing.expect_value(t, out[0].line, "retain\ttag/eDP-1/1\tstate=focused,occupied")
+	testing.expect_value(t, out[1].line, "retain\tfocus/eDP-1")
 }
 
 // Every window manager adapter must speak the same vocabulary, or the bar
@@ -241,7 +247,7 @@ wm_adapters_share_one_vocabulary :: proc(t: ^testing.T) {
 		for line in out {
 			m, good := parse(line, context.temp_allocator)
 			if !good do continue
-			kinds[strings.clone(m.kind, context.temp_allocator)] = true
+			kinds[strings.clone(kind_of(m.topic), context.temp_allocator)] = true
 		}
 
 		list := make([dynamic]string, context.temp_allocator)
@@ -279,23 +285,23 @@ an_invented_kind_passes_through_untouched :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(out), 1)
 	if len(out) == 0 do return
 	fmt.printfln("\n--- an unlisted kind -> %s", out[0])
-	testing.expect_value(t, out[0].line, "solar_panel\troof\twatts=412\ttilt=31")
+	testing.expect_value(t, out[0].line, "retain\tsolar_panel/roof\twatts=412\ttilt=31")
 
 	// and a consumer parses it with the same parser as every other line
 	m, good := parse(out[0].line, context.temp_allocator)
 	testing.expect(t, good)
-	testing.expect_value(t, m.kind, "solar_panel")
-	testing.expect_value(t, m.attr["watts"], "412")
+	testing.expect_value(t, kind_of(m.topic), "solar_panel")
+	testing.expect_value(t, m.payload["watts"], "412")
 }
 
-// A consumer sends commands and may not send facts. If this ever passes a
-// lowercase kind through, anything that can connect can forge desktop state
-// for everything else that reads.
+// A client that has not connected may publish but not retain. If this ever
+// passes, anything that can connect can forge desktop state for everything
+// else that reads.
 @(test)
 a_consumer_cannot_forge_a_fact :: proc(t: ^testing.T) {
 	// The rule lives in read_conn, so it is exercised over a real socket.
 	path := "/tmp/kippsrv-forge.sock"
-	s, ok := serve(path, "version\t1\ttest\tproto=1")
+	s, ok := serve(path, "version\t2\tbroker=test")
 	if !testing.expect(t, ok) do return
 	defer stop(s)
 
@@ -309,7 +315,7 @@ a_consumer_cannot_forge_a_fact :: proc(t: ^testing.T) {
 	srv_ready(s, s.fd)          // accept
 	srv_flush(s)                // greeting and sync out of the way
 
-	forged := "tag\teDP-1\t9\tstate=focused\n"
+	forged := "retain\ttag/eDP-1/9\tstate=focused\n"
 	posix.send(fd, raw_data(forged), c.size_t(len(forged)), {})
 	srv_ready(s, s.conns[0].fd)
 	srv_flush(s)
@@ -318,8 +324,8 @@ a_consumer_cannot_forge_a_fact :: proc(t: ^testing.T) {
 	n := posix.recv(fd, raw_data(buf[:]), len(buf), {})
 	got := string(buf[:max(0, int(n))])
 	fmt.printfln("\n--- a forged fact gets: %s", strings.trim_space(got))
-	testing.expect(t, strings.contains(got, "error\tbadcmd"),
-	               "a lowercase kind from a consumer must be refused")
+	testing.expect(t, strings.contains(got, "error\tnoconnect"),
+	               "a retain before connect must be refused")
 }
 
 // Focus moves between tags. Saying which one is focused without saying which
@@ -344,7 +350,7 @@ switching_tags_clears_the_last_one :: proc(t: ^testing.T) {
 	focused := 0
 	for line in lines {
 		m, good := parse(line, context.temp_allocator)
-		if good && m.kind == "tag" && strings.contains(m.attr["state"], "focused") {
+		if good && kind_of(m.topic) == "tag" && strings.contains(m.payload["state"], "focused") {
 			focused += 1
 		}
 	}

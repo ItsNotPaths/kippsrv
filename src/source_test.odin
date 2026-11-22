@@ -101,7 +101,7 @@ raw_framing_hands_over_the_chunk :: proc(t: ^testing.T) {
 	out := drain(&ss)
 	fmt.printfln("--- exec, raw -> %v", out)
 	testing.expect_value(t, len(out), 1)
-	if len(out) == 1 do testing.expect_value(t, out[0], "chunk\tbytes=15")
+	if len(out) == 1 do testing.expect_value(t, out[0], "publish\tchunk\tbytes=15")
 }
 
 @(test)
@@ -188,7 +188,7 @@ a_throttled_source_holds_the_newest_unit :: proc(t: ^testing.T) {
 	s.gap_due = 0                                 // the window closed
 	held := src_tick(&ss, now_ms())
 	testing.expect_value(t, len(held), 2)
-	testing.expect_value(t, held[1].line, "tag\teDP-1\t3\tstate=focused,occupied")
+	testing.expect_value(t, held[1].line, "retain\ttag/eDP-1/3\tstate=focused,occupied")
 	testing.expect_value(t, len(s.held), 0)
 }
 
