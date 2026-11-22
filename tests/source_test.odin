@@ -149,7 +149,7 @@ an_idle_source_backs_off :: proc(t: ^testing.T) {
 	s, ok := kippsrv.src_exec(&ss, "p", "true", a, 2000)
 	if !testing.expect(t, ok) do return
 
-	s.done = true
+	s.state = .Ended
 
 	testing.expect_value(t, s.every, i64(2000))
 	for _ in 0 ..< 3 do cycle(&ss, s, 0)        // three quiet cycles
@@ -212,16 +212,16 @@ a_running_source_has_no_deadline :: proc(t: ^testing.T) {
 	ss: kippsrv.Sources
 	defer delete(ss.list)
 
-	live := kippsrv.Source{kind = .Sock, every = kippsrv.RETRY_MS, base = kippsrv.RETRY_MS, done = false}
+	live := kippsrv.Source{kind = .Sock, every = kippsrv.RETRY_MS, base = kippsrv.RETRY_MS}
 	append(&ss.list, &live)
 	testing.expect_value(t, kippsrv.src_timeout(&ss, kippsrv.now_ms()), -1)
 
-	live.done = true
+	live.state = .Ended
 	live.due = kippsrv.now_ms() + 1000
 	testing.expect(t, kippsrv.src_timeout(&ss, kippsrv.now_ms()) > 0, "a closed socket is due again")
 
 	// A held unit is a deadline of its own, or poll would sleep through it.
-	held := kippsrv.Source{kind = .Sock, done = false, gap_due = kippsrv.now_ms() + 20}
+	held := kippsrv.Source{kind = .Sock, gap_due = kippsrv.now_ms() + 20}
 	append(&held.held, 'x')
 	defer delete(held.held)
 	append(&ss.list, &held)

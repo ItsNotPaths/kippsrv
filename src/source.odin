@@ -19,7 +19,14 @@ Kind :: enum {
 	Timer,
 }
 
-// (hole source-state :tags sources :sev polish) the life of a source is spread over done, dead, fails, pid, fd and input; one state enum.
+// Dead is offline: an exec stays down, a sock keeps dialling. Reap can mark a
+// source Dead before its pipe's last lines are read.
+State :: enum {
+	Running,
+	Ended,   // for now: its period starts it again
+	Dead,
+}
+
 Source :: struct {
 	id:      int,
 	name:    string,
@@ -40,9 +47,8 @@ Source :: struct {
 	held:    [dynamic]byte,  // newest unit, waiting for the throttle window
 	gap_due: i64,        // earliest next adapter call, when min_gap is set
 	due:     i64,        // next fire on the monotonic clock
-	done:    bool,       // ended for now
+	state:   State,
 	fails:   int,        // runs in a row that did not start
-	dead:    bool,       // gone, until a restart works
 	said:    Status,     // what status/<name> last said
 	retains: []string,   // its claim, borrowed from the config
 	takes:   []string,   // the requests it takes, borrowed from the config
@@ -109,7 +115,7 @@ src_reap :: proc(ss: ^Sources) {
 @(private = "file")
 failed_run :: proc(s: ^Source) {
 	s.fails += 1
-	if s.fails >= 3 || s.every == 0 do s.dead = true
+	if s.fails >= 3 || s.every == 0 do s.state = .Dead
 }
 
 // ------------------------------------------------------------------ time
@@ -190,7 +196,7 @@ src_exec :: proc(ss: ^Sources, name, command: string, adapter: Adapter,
 @(private = "file")
 respawn :: proc(s: ^Source) -> bool {
 	s.fd, s.input, s.pid = spawn(s.exec) or_return
-	s.done = false
+	s.state = .Running
 	s.settled = false
 	clear(&s.buf)
 	return true
@@ -233,7 +239,7 @@ redial :: proc(s: ^Source) -> bool {
 	}
 	set_flags(fd)
 	s.fd = fd
-	s.done = false
+	s.state = .Running
 	s.settled = false
 	clear(&s.buf)
 	return true
@@ -256,7 +262,7 @@ src_timer :: proc(ss: ^Sources, name: string, every_ms: i64,
 // The line limit is what makes a write whole or nothing: a pipe write under
 // PIPE_BUF cannot interleave with another writer's.
 src_send :: proc(s: ^Source, data: []byte) -> bool {
-	if len(data) == 0 || len(data) > MAX_LINE || s.done do return false
+	if len(data) == 0 || len(data) > MAX_LINE || s.state != .Running do return false
 	fd: posix.FD
 	#partial switch s.kind {
 	case .Exec: fd = s.input
@@ -309,7 +315,7 @@ src_fds :: proc(ss: ^Sources, dst: []posix.pollfd) -> int {
 	n := 0
 	dropped := 0
 	for s in ss.list {
-		if s.fd < 0 || s.done do continue
+		if s.fd < 0 do continue
 		if n == len(dst) {
 			dropped += 1
 			continue
@@ -335,12 +341,12 @@ src_timeout :: proc(ss: ^Sources, now: i64) -> i32 {
 	best: i64 = -1
 	for s in ss.list {
 		if len(s.held) > 0 do nearest(&best, s.gap_due, now)
-		if s.every == 0 || s.dead do continue
+		if s.every == 0 || s.state == .Dead do continue
 		// A source that is running has nothing due. Its period says when to
 		// start it again, not when to look at it, and a socket that is
 		// connected is running. Counting one gave poll a zero timeout and
 		// turned the loop into a spin.
-		if s.kind != .Timer && !s.done do continue
+		if s.kind != .Timer && s.state == .Running do continue
 		nearest(&best, s.due, now)
 	}
 	return i32(best)
@@ -387,7 +393,7 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 
 	for s in ss.list {
-		if s.fd != fd || s.done do continue
+		if s.fd != fd do continue
 
 		eof := false
 		chunk: [4096]byte
@@ -442,7 +448,7 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 			s.fd = -1
 			if s.input >= 0 do posix.close(s.input)
 			s.input = -1
-			s.done = true
+			if s.state == .Running do s.state = .Ended
 
 			// A poll ends every cycle by design, and a one-shot seed ends
 			// once and stays true. Neither is a death. A socket closing is,
@@ -487,7 +493,7 @@ back_off :: proc(s: ^Source) {
 // A cycle is one run of an exec source, or one beat of a timer.
 src_settle :: proc(ss: ^Sources) {
 	for s in ss.list {
-		if s.settled || !(s.done || s.kind == .Timer) do continue
+		if s.settled || !(s.state != .Running || s.kind == .Timer) do continue
 		back_off(s)
 		s.moved = 0
 		s.settled = true
@@ -519,7 +525,7 @@ src_may_retain :: proc(ss: ^Sources, e: Emit) -> bool {
 src_status :: proc(ss: ^Sources) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {
-		now := Status.Offline if s.dead else .Online
+		now := Status.Offline if s.state == .Dead else .Online
 		if s.said == now do continue
 		topic := fmt.tprintf("status/%s", s.name)
 		if !is_topic(topic) do continue
@@ -553,12 +559,12 @@ src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 			s.due = now + s.every
 			s.settled = false
 			emit_into(&out, vm_call(ss.vm, s.adapter, "tick"), s.id)
-		case s.done && s.every > 0:
-			// `dead` means the source is offline. It does not mean stop
+		case s.state != .Running && s.every > 0:
+			// Dead means the source is offline. It does not mean stop
 			// trying. A socket keeps dialling, because whatever served it
 			// can come back at any moment. An exec that will not start three
 			// times running has nothing left to say.
-			if s.dead && s.kind != .Sock do continue
+			if s.state == .Dead && s.kind != .Sock do continue
 
 			started := redial(s) if s.kind == .Sock else respawn(s)
 			if !started {
@@ -566,7 +572,6 @@ src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 				s.due = now + s.every
 			} else if s.kind == .Sock {
 				s.fails = 0       // an exec's run is judged when it exits, in src_reap
-				s.dead = false
 			}
 		}
 	}
