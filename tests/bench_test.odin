@@ -1,10 +1,11 @@
-package kippsrv
+package tests
 
 import "core:fmt"
 import "core:c"
 import "core:strings"
 import "core:sys/posix"
 import "core:testing"
+import kippsrv "../src"
 import "core:time"
 
 @(private = "file")
@@ -25,7 +26,7 @@ bench_layers :: proc(t: ^testing.T) {
 	{
 		start := time.tick_now()
 		for _ in 0 ..< N {
-			parse(line, context.temp_allocator)
+			kippsrv.parse(line, context.temp_allocator)
 			free_all(context.temp_allocator)
 		}
 		rate("parse (Odin)", N, time.tick_since(start))
@@ -35,10 +36,10 @@ bench_layers :: proc(t: ^testing.T) {
 	{
 		start := time.tick_now()
 		for _ in 0 ..< N {
-			o: Out
-			begin(&o, "tag")
-			add(&o, "eDP-1"); add(&o, "2"); add(&o, "state=focused,occupied")
-			str(&o)
+			o: kippsrv.Out
+			kippsrv.begin(&o, "tag")
+			kippsrv.add(&o, "eDP-1"); kippsrv.add(&o, "2"); kippsrv.add(&o, "state=focused,occupied")
+			kippsrv.str(&o)
 			free_all(context.temp_allocator)
 		}
 		rate("build (Odin)", N, time.tick_since(start))
@@ -46,14 +47,14 @@ bench_layers :: proc(t: ^testing.T) {
 
 	// 3. a full Lua round trip: one line in, two facts out
 	{
-		v, _ := vm_open()
-		defer vm_close(v)
-		a, ok := vm_load(v, "sources.d/wm-example.lua")
+		v, _ := kippsrv.vm_open()
+		defer kippsrv.vm_close(v)
+		a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
 		if !testing.expect(t, ok) do return
 
 		start := time.tick_now()
 		for _ in 0 ..< N {
-			vm_feed(v, a, "focus eDP-1 3")
+			kippsrv.vm_feed(v, a, "focus eDP-1 3")
 			free_all(context.temp_allocator)
 		}
 		rate("adapter feed (Lua)", N, time.tick_since(start))
@@ -61,13 +62,13 @@ bench_layers :: proc(t: ^testing.T) {
 
 	// 4. the heaviest real adapter: JSON decode plus emits
 	{
-		v, _ := vm_open()
-		defer vm_close(v)
-		a, _ := vm_load(v, "sources.d/wm-hypr.lua")
+		v, _ := kippsrv.vm_open()
+		defer kippsrv.vm_close(v)
+		a, _ := kippsrv.vm_load(v, "sources.d/wm-hypr.lua")
 
 		start := time.tick_now()
 		for _ in 0 ..< N {
-			vm_feed(v, a, "openwindow>>56503fc49590,3,firefox,Some Page Title")
+			kippsrv.vm_feed(v, a, "openwindow>>56503fc49590,3,firefox,Some Page Title")
 			free_all(context.temp_allocator)
 		}
 		rate("hypr adapter (Lua)", N, time.tick_since(start))
@@ -96,16 +97,16 @@ bench_broadcast :: proc(t: ^testing.T) {
 	fmt.println("--- broadcast, consumers that never read")
 	for consumers in ([]int{0, 1, 4, 16}) {
 		path := fmt.tprintf("/tmp/kbench-%d.sock", consumers)
-		s, ok := serve(path, "version\t2\tbroker=bench")
+		s, ok := kippsrv.serve(path, "version\t2\tbroker=bench")
 		if !testing.expect(t, ok) do continue
-		defer stop(s)
+		defer kippsrv.stop(s)
 
 		fds := make([dynamic]posix.FD, context.temp_allocator)
 		for _ in 0 ..< consumers {
 			fd := dial(path)
 			if fd < 0 do break
 			append(&fds, fd)
-			srv_ready(s, s.fd)          // accept it
+			kippsrv.srv_ready(s, s.fd)          // accept it
 			append(&s.conns[len(s.conns) - 1].patterns, strings.clone("*"))
 		}
 		defer for fd in fds do posix.close(fd)
@@ -113,12 +114,12 @@ bench_broadcast :: proc(t: ^testing.T) {
 		start := time.tick_now()
 		sent := 0
 		for _ in 0 ..< N {
-			broadcast(s, line)
+			kippsrv.broadcast(s, line)
 			sent += 1
-			if sent % 32 == 0 do srv_flush(s)   // one pass, one write
+			if sent % 32 == 0 do kippsrv.srv_flush(s)   // one pass, one write
 			if consumers > 0 && len(s.conns) == 0 do break
 		}
-		srv_flush(s)
+		kippsrv.srv_flush(s)
 		d := time.tick_since(start)
 
 		fmt.printfln("  %2d consumers  %10.0f lines/s   %d sent, %d still connected",

@@ -1,15 +1,16 @@
-package kippsrv
+package tests
 
 import "core:fmt"
 import "core:testing"
+import kippsrv "../src"
 
 // The fence has to be a fact. If any of these names exists, a script can
 // reach the filesystem, the network, or the loop.
 @(test)
 sandbox_is_closed :: proc(t: ^testing.T) {
-	v, ok := vm_open()
+	v, ok := kippsrv.vm_open()
 	testing.expect(t, ok, "vm_open")
-	defer vm_close(v)
+	defer kippsrv.vm_close(v)
 
 	closed := []string{
 		"io", "os", "package", "debug", "coroutine",
@@ -17,16 +18,16 @@ sandbox_is_closed :: proc(t: ^testing.T) {
 	}
 	for name in closed {
 		src := fmt.tprintf("if %s ~= nil then error('%s exists') end", name, name)
-		testing.expectf(t, vm_eval(v, src), "%s must not exist", name)
+		testing.expectf(t, kippsrv.vm_eval(v, src), "%s must not exist", name)
 	}
 }
 
 @(test)
 emit_joins_fields :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
-	testing.expect(t, vm_eval(v, `k.emit("tag", "eDP-1", "2", "state=focused")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.emit("tag", "eDP-1", "2", "state=focused")`))
 	testing.expect_value(t, len(v.emitted), 1)
 	testing.expect_value(t, v.emitted[0].line, "retain\ttag/eDP-1/2\tstate=focused")
 }
@@ -35,20 +36,20 @@ emit_joins_fields :: proc(t: ^testing.T) {
 // by putting a tab or a newline in a value.
 @(test)
 emit_cannot_forge_a_line :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
-	testing.expect(t, vm_eval(v, `k.emit("title", "0x1", "t=a\tb\nfocus\tHDMI-1")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.emit("title", "0x1", "t=a\tb\nfocus\tHDMI-1")`))
 	testing.expect_value(t, len(v.emitted), 1)
 	testing.expect_value(t, v.emitted[0].line, "retain\ttitle/0x1\tt=abfocusHDMI-1")
 }
 
 @(test)
 parse_reaches_lua :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
-	testing.expect(t, vm_eval(v, `
+	testing.expect(t, kippsrv.vm_eval(v, `
 		local m = k.parse("retain\ttag/eDP-1/2\tstate=focused,occupied")
 		if m.verb ~= "retain" then error("verb " .. tostring(m.verb)) end
 		if m.topic ~= "tag/eDP-1/2" then error("topic") end
@@ -59,7 +60,7 @@ parse_reaches_lua :: proc(t: ^testing.T) {
 
 @(test)
 parse_round_trips_the_wire :: proc(t: ^testing.T) {
-	m, ok := parse("retain\tnet/wifi\tssid=hotel guest\turl=a=b", context.temp_allocator)
+	m, ok := kippsrv.parse("retain\tnet/wifi\tssid=hotel guest\turl=a=b", context.temp_allocator)
 	testing.expect(t, ok)
 	testing.expect_value(t, m.verb, "retain")
 	testing.expect_value(t, m.topic, "net/wifi")
@@ -67,35 +68,35 @@ parse_round_trips_the_wire :: proc(t: ^testing.T) {
 	testing.expect_value(t, m.payload["url"], "a=b")
 
 	// a field after the topic with no '=' is skipped
-	r, rok := parse("publish\tfocus\teDP-1\tx=1", context.temp_allocator)
+	r, rok := kippsrv.parse("publish\tfocus\teDP-1\tx=1", context.temp_allocator)
 	testing.expect(t, rok)
 	testing.expect_value(t, len(r.payload), 1)
 }
 
 @(test)
 adapter_turns_a_foreign_line_into_facts :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
-	a, ok := vm_load(v, "sources.d/wm-example.lua")
+	a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
 	if !testing.expect(t, ok, "vm_load") do return
-	defer vm_unload(v, a)
+	defer kippsrv.vm_unload(v, a)
 
-	out := vm_feed(v, a, "focus eDP-1 3")
+	out := kippsrv.vm_feed(v, a, "focus eDP-1 3")
 	testing.expect_value(t, len(out), 2)
 	testing.expect_value(t, out[0].line, "retain\tfocus/eDP-1")
 	testing.expect_value(t, out[1].line, "retain\ttag/eDP-1/3\tstate=focused,occupied")
 
 	// a line the adapter does not understand produces nothing
-	testing.expect_value(t, len(vm_feed(v, a, "some other format")), 0)
+	testing.expect_value(t, len(kippsrv.vm_feed(v, a, "some other format")), 0)
 }
 
 @(test)
 a_missing_adapter_fails_without_dying :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
-	_, ok := vm_load(v, "sources.d/wm-nothing-here.lua")
+	_, ok := kippsrv.vm_load(v, "sources.d/wm-nothing-here.lua")
 	testing.expect(t, !ok, "a missing file must fail, not crash")
 }
 
@@ -103,18 +104,18 @@ a_missing_adapter_fails_without_dying :: proc(t: ^testing.T) {
 // descriptor out of a script, which is a different thing entirely.
 @(test)
 a_runaway_script_is_stopped :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
-	a, ok := vm_load(v, "test/lua/runaway.lua")
+	a, ok := kippsrv.vm_load(v, "tests/lua/runaway.lua")
 	if !testing.expect(t, ok, "vm_load") do return
-	defer vm_unload(v, a)
+	defer kippsrv.vm_unload(v, a)
 
-	out := vm_feed(v, a, "anything")     // returns rather than hanging
+	out := kippsrv.vm_feed(v, a, "anything")     // returns rather than hanging
 	testing.expect_value(t, len(out), 0)
 
 	// and the VM still works afterwards
-	testing.expect(t, vm_eval(v, `k.emit("after", "ok")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.emit("after", "ok")`))
 	testing.expect_value(t, len(v.emitted), 1)
 }
 
@@ -122,16 +123,16 @@ a_runaway_script_is_stopped :: proc(t: ^testing.T) {
 // single instruction to the VM, so the allocator cap is what stops it.
 @(test)
 a_greedy_script_is_stopped :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
 	before := v.mem.used
-	testing.expect(t, !vm_eval(v, `local s = string.rep("x", 400000000)`),
+	testing.expect(t, !kippsrv.vm_eval(v, `local s = string.rep("x", 400000000)`),
 	               "an allocation past the cap must fail the call")
-	testing.expect(t, v.mem.used < MEM_CAP, "the cap held")
+	testing.expect(t, v.mem.used < kippsrv.MEM_CAP, "the cap held")
 
 	// and the VM still works afterwards
-	testing.expect(t, vm_eval(v, `k.emit("after", "ok")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.emit("after", "ok")`))
 	testing.expect_value(t, len(v.emitted), 1)
 	testing.expect(t, v.mem.used < before + (1 << 20), "the memory came back")
 }
@@ -141,17 +142,17 @@ a_greedy_script_is_stopped :: proc(t: ^testing.T) {
 // of that kind, so it is refused rather than stored.
 @(test)
 a_subject_holding_equals_is_refused :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
-	testing.expect(t, vm_eval(v, `k.emit("net", "home=wifi", "type=wifi")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.emit("net", "home=wifi", "type=wifi")`))
 	testing.expect_value(t, len(v.emitted), 0)
 
 	// the same name is fine in an attribute: only the first '=' separates
-	testing.expect(t, vm_eval(v, `k.emit("net", "uuid-1", "name=home=wifi")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.emit("net", "uuid-1", "name=home=wifi")`))
 	testing.expect_value(t, len(v.emitted), 1)
 	if len(v.emitted) == 1 {
-		m, ok := parse(v.emitted[0].line, context.temp_allocator)
+		m, ok := kippsrv.parse(v.emitted[0].line, context.temp_allocator)
 		testing.expect(t, ok)
 		testing.expect_value(t, m.topic, "net/uuid-1")
 		testing.expect_value(t, m.payload["name"], "home=wifi")
@@ -162,30 +163,30 @@ a_subject_holding_equals_is_refused :: proc(t: ^testing.T) {
 // and a line marked event=1 is passed on without the mark.
 @(test)
 passthrough_carries_a_kipp_program :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	a, ok := vm_load(v, "sources.d/kipp.lua")
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	a, ok := kippsrv.vm_load(v, "sources.d/kipp.lua")
 	if !testing.expect(t, ok, "vm_load") do return
 
-	fact := vm_feed(v, a, "win\t7\tws=1\tpos=2\ttitle=a=b")
+	fact := kippsrv.vm_feed(v, a, "win\t7\tws=1\tpos=2\ttitle=a=b")
 	testing.expect_value(t, len(fact), 1)
 	testing.expect_value(t, fact[0].line, "retain\twin/7\tws=1\tpos=2\ttitle=a=b")
 
-	event := vm_feed(v, a, "wm_done\tevent=1\tref=p17\tcmd=WM_LINE")
+	event := kippsrv.vm_feed(v, a, "wm_done\tevent=1\tref=p17\tcmd=WM_LINE")
 	testing.expect_value(t, len(event), 1)
 	testing.expect_value(t, event[0].line, "publish\twm_done\tref=p17\tcmd=WM_LINE")
 
-	testing.expect_value(t, len(vm_feed(v, a, "sync\tstate")), 0)
+	testing.expect_value(t, len(kippsrv.vm_feed(v, a, "sync\tstate")), 0)
 }
 
 // Only kipp reaches the socket.
 @(test)
 a_kind_or_key_that_is_not_a_word_is_refused :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
 
-	testing.expect(t, vm_eval(v, `k.emit("Win", "7")`))
-	testing.expect(t, vm_eval(v, `k.emit("42", "7")`))
-	testing.expect(t, vm_eval(v, `k.event("key", "super+a", "Bad Key=1")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.emit("Win", "7")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.emit("42", "7")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.event("key", "super+a", "Bad Key=1")`))
 	testing.expect_value(t, len(v.emitted), 0)
 }

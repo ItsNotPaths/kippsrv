@@ -343,7 +343,7 @@ time, so the layout follows the same `when` switch as the library.
 
 ## What the adapters absorb
 
-Eight real formats, captured from live programs and kept in `test/fmt/`. Each
+Eight real formats, captured from live programs and kept in `tests/fmt/`. Each
 converts through one Lua file and nothing downstream learns it.
 
 | Shape | Source | Adapter |

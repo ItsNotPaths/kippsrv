@@ -75,9 +75,8 @@ second binary, kippbus. Edited in place. Decided 2026-11-21; the talk is in
 - **The payload rule** (only `key=value`, or positional too) is open in kipp's ws.md.
 - **`lint-core` and `lint-api`** derive from `vocab/` and from the Lua surface, which both change.
 
-No code site, so these stay in prose: `README.md`, `DIAGNOSTICS.md` (E-subject, E-cmdemit and the
-`config:` messages change), `check.sh` (it writes a config.lua), and the tests in `src/*_test.odin`
-that assert v1 lines.
+No code site, so these stay in prose: `README.md` and `DIAGNOSTICS.md` (E-subject, E-cmdemit and
+the `config:` messages change; E-claim is new).
 
 ## Workstream A: wire and broker
 

@@ -2,7 +2,7 @@
 # Start the daemon on its own source files, talk to it with socat, check what
 # comes back. socat is a first-class client, so the checks use nothing else.
 set -u
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 TOP=/tmp/kippsrv-check.$$
 FAILS=0
@@ -75,7 +75,7 @@ SOCK=$TOP/run/kippsrv.sock
 
 # The source ends long before the consumer connects. Everything the consumer
 # sees comes out of the store.
-adapter wm-dwl.lua 'source { name = "wm", exec = "cat test/fmt/dwl.txt",
+adapter wm-dwl.lua 'source { name = "wm", exec = "cat tests/fmt/dwl.txt",
          retains = {"tag/*", "focus/*", "layout/*", "title/*", "app/*"} }' > "$SYSTEM/wm-dwl.lua"
 
 # A claim overlapping one already loaded refuses its file, and so does a taken
@@ -177,7 +177,7 @@ if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
 	folders "$D"
 	{ echo "source { name = \"test\", retains = \"*\",
          dbus = {\"type='signal',interface='org.kippsrv.Test'\"} }"
-	  cat test/lua/dbus_echo.lua; } > "$D/data/kippsrv/sources.d/test.lua"
+	  cat tests/lua/dbus_echo.lua; } > "$D/data/kippsrv/sources.d/test.lua"
 	start "$D"
 	DSOCK=$D/run/kippsrv.sock
 	{ printf 'connect\tcheck\nsubscribe\t*\n'; sleep 3; } | timeout 3 socat - UNIX-CONNECT:"$DSOCK" \

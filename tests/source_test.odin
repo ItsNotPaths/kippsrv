@@ -1,24 +1,25 @@
-package kippsrv
+package tests
 
 import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
 import "core:testing"
+import kippsrv "../src"
 import "core:time"
 
 // Drive a source set until every descriptor has ended, or the budget runs out.
 @(private = "file")
-drain :: proc(ss: ^Sources, budget := 200) -> []string {
+drain :: proc(ss: ^kippsrv.Sources, budget := 200) -> []string {
 	out := make([dynamic]string, context.temp_allocator)
 	fds: [16]posix.pollfd
 
 	for _ in 0 ..< budget {
-		n := src_fds(ss, fds[:])
+		n := kippsrv.src_fds(ss, fds[:])
 		if n == 0 do break
 		if posix.poll(&fds[0], posix.nfds_t(n), 50) <= 0 do continue
 		for i in 0 ..< n {
 			if fds[i].revents == {} do continue
-			for l in src_ready(ss, fds[i].fd) {
+			for l in kippsrv.src_ready(ss, fds[i].fd) {
 				append(&out, strings.clone(l.line, context.temp_allocator))
 			}
 		}
@@ -29,15 +30,15 @@ drain :: proc(ss: ^Sources, budget := 200) -> []string {
 // A blank line is skipped, not an empty unit that stops the source.
 @(test)
 exec_source_splits_lines :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	ss := kippsrv.Sources{vm = v}
+	defer kippsrv.src_close(&ss)
 
-	a, ok := vm_load(v, "sources.d/wm-example.lua")
+	a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
 	if !testing.expect(t, ok) do return
 
-	_, spawned := src_exec(&ss, "printf", `printf 'focus eDP-1 3\n\n\nfocus HDMI-A-1 9\n'`, a)
+	_, spawned := kippsrv.src_exec(&ss, "printf", `printf 'focus eDP-1 3\n\n\nfocus HDMI-A-1 9\n'`, a)
 	if !testing.expect(t, spawned, "src_exec") do return
 
 	out := drain(&ss)
@@ -49,17 +50,17 @@ exec_source_splits_lines :: proc(t: ^testing.T) {
 // stdin is the way back: a line sent to an exec source reaches the child.
 @(test)
 a_line_sent_reaches_the_child :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	ss := kippsrv.Sources{vm = v}
+	defer kippsrv.src_close(&ss)
 
-	a, ok := vm_load(v, "sources.d/wm-example.lua")
+	a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
 	if !testing.expect(t, ok) do return
-	s, spawned := src_exec(&ss, "cat", "cat", a)
+	s, spawned := kippsrv.src_exec(&ss, "cat", "cat", a)
 	if !testing.expect(t, spawned) do return
 
-	testing.expect(t, src_send(s, transmute([]byte)string("focus eDP-1 5\n")))
+	testing.expect(t, kippsrv.src_send(s, transmute([]byte)string("focus eDP-1 5\n")))
 	out := drain(&ss, 10)        // cat never ends, so a short budget
 	testing.expect_value(t, len(out), 2)
 }
@@ -68,29 +69,29 @@ a_line_sent_reaches_the_child :: proc(t: ^testing.T) {
 // goes offline. A command that runs and ends stays online.
 @(test)
 a_command_that_cannot_run_goes_offline :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	ss := kippsrv.Sources{vm = v}
+	defer kippsrv.src_close(&ss)
 
-	a, ok := vm_load(v, "sources.d/wm-example.lua")
+	a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
 	if !testing.expect(t, ok) do return
-	missing, _ := src_exec(&ss, "missing", "kippsrv-no-such-command", a)
-	ran, _ := src_exec(&ss, "ran", "true", a)
+	missing, _ := kippsrv.src_exec(&ss, "missing", "kippsrv-no-such-command", a)
+	ran, _ := kippsrv.src_exec(&ss, "ran", "true", a)
 	if !testing.expect(t, missing != nil && ran != nil) do return
 
-	src_status(&ss)              // both start online
+	kippsrv.src_status(&ss)              // both start online
 	drain(&ss)
 	said := make([dynamic]string, context.temp_allocator)
 	for _ in 0 ..< 100 {
-		src_reap(&ss)
-		for e in src_status(&ss) do append(&said, e.line)
+		kippsrv.src_reap(&ss)
+		for e in kippsrv.src_status(&ss) do append(&said, e.line)
 		if len(said) > 0 do break
 		time.sleep(10 * time.Millisecond)
 	}
 	time.sleep(50 * time.Millisecond)     // and `true` has ended too
-	src_reap(&ss)
-	for e in src_status(&ss) do append(&said, e.line)
+	kippsrv.src_reap(&ss)
+	for e in kippsrv.src_status(&ss) do append(&said, e.line)
 	testing.expect_value(t, len(said), 1)
 	if len(said) == 1 do testing.expect_value(t, said[0], "retain\tstatus/missing\tstate=offline")
 }
@@ -99,15 +100,15 @@ a_command_that_cannot_run_goes_offline :: proc(t: ^testing.T) {
 // terminator, and the source turns it into a flush.
 @(test)
 eof_flushes_the_last_record :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	ss := kippsrv.Sources{vm = v}
+	defer kippsrv.src_close(&ss)
 
-	a, ok := vm_load(v, "sources.d/power-upower.lua")
+	a, ok := kippsrv.vm_load(v, "sources.d/power-upower.lua")
 	if !testing.expect(t, ok) do return
 
-	_, spawned := src_exec(&ss, "cat", "cat test/fmt/upower.txt", a)
+	_, spawned := kippsrv.src_exec(&ss, "cat", "cat tests/fmt/upower.txt", a)
 	if !testing.expect(t, spawned) do return
 
 	out := drain(&ss)
@@ -118,18 +119,18 @@ eof_flushes_the_last_record :: proc(t: ^testing.T) {
 
 @(test)
 timer_source_fires_on_its_period :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	ss := kippsrv.Sources{vm = v}
+	defer kippsrv.src_close(&ss)
 
-	a, _ := vm_load(v, "test/lua/tick.lua")
-	src_timer(&ss, "beat", 20, a)
+	a, _ := kippsrv.vm_load(v, "tests/lua/tick.lua")
+	kippsrv.src_timer(&ss, "beat", 20, a)
 
 	got := 0
-	start := now_ms()
-	for now_ms() - start < 120 {
-		got += len(src_tick(&ss, now_ms()))
+	start := kippsrv.now_ms()
+	for kippsrv.now_ms() - start < 120 {
+		got += len(kippsrv.src_tick(&ss, kippsrv.now_ms()))
 	}
 	fmt.printfln("--- timer, 20ms over 120ms -> %d beats", got)
 	testing.expect(t, got >= 4 && got <= 8, "roughly one beat per period")
@@ -139,13 +140,13 @@ timer_source_fires_on_its_period :: proc(t: ^testing.T) {
 // source straight back to its configured rate.
 @(test)
 an_idle_source_backs_off :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	ss := kippsrv.Sources{vm = v}
+	defer kippsrv.src_close(&ss)
 
-	a, _ := vm_load(v, "sources.d/wm-example.lua")
-	s, ok := src_exec(&ss, "p", "true", a, 2000)
+	a, _ := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+	s, ok := kippsrv.src_exec(&ss, "p", "true", a, 2000)
 	if !testing.expect(t, ok) do return
 
 	s.done = true
@@ -168,37 +169,37 @@ an_idle_source_backs_off :: proc(t: ^testing.T) {
 
 // One run of a source, and what the store made of it.
 @(private = "file")
-cycle :: proc(ss: ^Sources, s: ^Source, moved: int) {
+cycle :: proc(ss: ^kippsrv.Sources, s: ^kippsrv.Source, moved: int) {
 	s.settled = false
 	s.moved = moved
-	src_settle(ss)
+	kippsrv.src_settle(ss)
 }
 
 // A throttled source reaches its adapter once a window, and the newest unit
 // it was given in between is not lost: it goes out when the window closes.
 @(test)
 a_throttled_source_holds_the_newest_unit :: proc(t: ^testing.T) {
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	ss := kippsrv.Sources{vm = v}
+	defer kippsrv.src_close(&ss)
 
-	a, _ := vm_load(v, "sources.d/wm-example.lua")
-	s, ok := src_exec(&ss, "p", "true", a, 0)
+	a, _ := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+	s, ok := kippsrv.src_exec(&ss, "p", "true", a, 0)
 	if !testing.expect(t, ok) do return
 	s.thr.min_gap = 10_000
 
-	out := make([dynamic]Emit, context.temp_allocator)
-	src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 1"))
+	out := make([dynamic]kippsrv.Emit, context.temp_allocator)
+	kippsrv.src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 1"))
 	testing.expect_value(t, len(out), 2)          // the first unit passes
 
-	src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 2"))
-	src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 3"))
+	kippsrv.src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 2"))
+	kippsrv.src_feed(v, s, &out, transmute([]byte)string("focus eDP-1 3"))
 	testing.expect_value(t, len(out), 2)          // both were held
 	testing.expect_value(t, string(s.held[:]), "focus eDP-1 3")
 
 	s.gap_due = 0                                 // the window closed
-	held := src_tick(&ss, now_ms())
+	held := kippsrv.src_tick(&ss, kippsrv.now_ms())
 	testing.expect_value(t, len(held), 2)
 	testing.expect_value(t, held[1].line, "retain\ttag/eDP-1/3\tstate=focused,occupied")
 	testing.expect_value(t, len(s.held), 0)
@@ -208,23 +209,23 @@ a_throttled_source_holds_the_newest_unit :: proc(t: ^testing.T) {
 // poll a zero timeout, and the loop spun at one whole core.
 @(test)
 a_running_source_has_no_deadline :: proc(t: ^testing.T) {
-	ss: Sources
+	ss: kippsrv.Sources
 	defer delete(ss.list)
 
-	live := Source{kind = .Sock, every = RETRY_MS, base = RETRY_MS, done = false}
+	live := kippsrv.Source{kind = .Sock, every = kippsrv.RETRY_MS, base = kippsrv.RETRY_MS, done = false}
 	append(&ss.list, &live)
-	testing.expect_value(t, src_timeout(&ss, now_ms()), -1)
+	testing.expect_value(t, kippsrv.src_timeout(&ss, kippsrv.now_ms()), -1)
 
 	live.done = true
-	live.due = now_ms() + 1000
-	testing.expect(t, src_timeout(&ss, now_ms()) > 0, "a closed socket is due again")
+	live.due = kippsrv.now_ms() + 1000
+	testing.expect(t, kippsrv.src_timeout(&ss, kippsrv.now_ms()) > 0, "a closed socket is due again")
 
 	// A held unit is a deadline of its own, or poll would sleep through it.
-	held := Source{kind = .Sock, done = false, gap_due = now_ms() + 20}
+	held := kippsrv.Source{kind = .Sock, done = false, gap_due = kippsrv.now_ms() + 20}
 	append(&held.held, 'x')
 	defer delete(held.held)
 	append(&ss.list, &held)
-	gap := src_timeout(&ss, now_ms())
+	gap := kippsrv.src_timeout(&ss, kippsrv.now_ms())
 	testing.expect(t, gap >= 0 && gap <= 20, "a held unit is due")
 }
 
@@ -233,19 +234,19 @@ a_running_source_has_no_deadline :: proc(t: ^testing.T) {
 @(test)
 a_lost_source_goes_offline :: proc(t: ^testing.T) {
 	path := "/tmp/kippsrv-lost.sock"
-	srv, ok := serve(path, "version\t2\tbroker=test")
+	srv, ok := kippsrv.serve(path, "version\t2\tbroker=test")
 	if !testing.expect(t, ok) do return
 
-	v, _ := vm_open()
-	defer vm_close(v)
-	ss := Sources{vm = v}
-	defer src_close(&ss)
-	_, dialled := src_sock(&ss, "lost", path, NO_ADAPTER)
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	ss := kippsrv.Sources{vm = v}
+	defer kippsrv.src_close(&ss)
+	_, dialled := kippsrv.src_sock(&ss, "lost", path, kippsrv.NO_ADAPTER)
 	if !testing.expect(t, dialled) do return
 
-	status :: proc(ss: ^Sources) -> []string {
+	status :: proc(ss: ^kippsrv.Sources) -> []string {
 		out := make([dynamic]string, context.temp_allocator)
-		for e in src_status(ss) do append(&out, e.line)
+		for e in kippsrv.src_status(ss) do append(&out, e.line)
 		return out[:]
 	}
 	first := status(&ss)
@@ -253,21 +254,21 @@ a_lost_source_goes_offline :: proc(t: ^testing.T) {
 	if len(first) == 1 do testing.expect_value(t, first[0], "retain\tstatus/lost\tstate=online")
 	testing.expect_value(t, len(status(&ss)), 0)
 
-	stop(srv)
+	kippsrv.stop(srv)
 	drain(&ss)
-	later := now_ms()
+	later := kippsrv.now_ms()
 	for _ in 0 ..< 3 {
 		later += 1_000_000
-		src_tick(&ss, later)          // each redial finds nothing
+		kippsrv.src_tick(&ss, later)          // each redial finds nothing
 	}
 	gone := status(&ss)
 	testing.expect_value(t, len(gone), 1)
 	if len(gone) == 1 do testing.expect_value(t, gone[0], "retain\tstatus/lost\tstate=offline")
 	testing.expect_value(t, len(status(&ss)), 0)
 
-	back, _ := serve(path, "version\t2\tbroker=test")
-	defer stop(back)
-	src_tick(&ss, later + 1_000_000)
+	back, _ := kippsrv.serve(path, "version\t2\tbroker=test")
+	defer kippsrv.stop(back)
+	kippsrv.src_tick(&ss, later + 1_000_000)
 	again := status(&ss)
 	testing.expect_value(t, len(again), 1)
 	if len(again) == 1 do testing.expect_value(t, again[0], "retain\tstatus/lost\tstate=online")

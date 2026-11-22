@@ -1,5 +1,5 @@
 ODIN ?= odin
-CORE  = $(filter-out %_test.odin,$(wildcard src/*.odin))
+CORE  = $(wildcard src/*.odin)
 
 # sd-bus has two implementations. libsystemd is the default because a systemd
 # machine already has it. `make static` uses basu instead and links it in, so
@@ -28,8 +28,8 @@ basu/build/libbasu.a:
 	ninja -C basu/build libbasu.a
 
 check: kippsrv lint
-	$(ODIN) test src
-	./check.sh
+	$(ODIN) test tests
+	./tests/check.sh
 
 lint: lint-core lint-fd lint-api lint-vocab
 
