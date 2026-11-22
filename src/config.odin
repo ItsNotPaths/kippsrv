@@ -20,7 +20,7 @@ Config :: struct {
 Src_Spec :: struct {
 	name:    string,
 	adapter: string,
-	exec:    []string,   // a command, or
+	exec:    string,     // a command for sh -c, or
 	sock:    string,     // a path, or
 	dbus:    []string,   // match rules, or
 	system:  bool,       // the system bus instead of the session bus
@@ -30,7 +30,6 @@ Src_Spec :: struct {
 	notify:  bool,       // own org.freedesktop.Notifications on this bus
 	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
-	cmd:     string,     // where a command goes back out, when it is not `sock`
 }
 
 @(private = "file")
@@ -75,7 +74,15 @@ expand :: proc(s: string, allocator := context.allocator) -> string {
 field_str :: proc(L: ^lua.State, key: cstring) -> (string, bool) {
 	defer lua.pop(L, 1)
 	if lua.getfield(L, -1, key) != c.int(lua.TSTRING) do return "", false
-	return expand(string(lua.tostring(L, -1))), true
+	return strings.clone(string(lua.tostring(L, -1))), true
+}
+
+// A path, with $VAR and ~ expanded. A command is not: sh expands it.
+@(private = "file")
+field_path :: proc(L: ^lua.State, key: cstring) -> (path: string, ok: bool) {
+	text := field_str(L, key) or_return
+	defer delete(text)
+	return expand(text), true
 }
 
 @(private = "file")
@@ -145,8 +152,8 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 		return {}, false
 	}
 
-	cfg.socket, _ = field_str(L, "socket")
-	cfg.state, _ = field_str(L, "state")
+	cfg.socket, _ = field_path(L, "socket")
+	cfg.state, _ = field_path(L, "state")
 	cfg.sources = make([dynamic]Src_Spec)
 
 	if lua.getfield(L, -1, "sources") != c.int(lua.TTABLE) {
@@ -162,9 +169,9 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 
 		s: Src_Spec
 		s.name, _ = field_str(L, "name")
-		s.adapter, _ = field_str(L, "adapter")
-		s.sock, _ = field_str(L, "sock")
-		s.exec = field_list(L, "exec")
+		s.adapter, _ = field_path(L, "adapter")
+		s.sock, _ = field_path(L, "sock")
+		s.exec, _ = field_str(L, "exec")
 		s.dbus = field_list(L, "dbus")
 		s.system = field_bool(L, "system")
 		s.timer = field_bool(L, "timer")
@@ -173,7 +180,6 @@ config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 		s.notify = field_bool(L, "notify")
 		s.bus_name, _ = field_str(L, "bus_name")
 		s.every = field_int(L, "every")
-		s.cmd, _ = field_str(L, "cmd")
 
 		if s.adapter == "" && !s.watcher && !s.notify {
 			fmt.eprintfln("config: source %d has no adapter, skipped", i)
@@ -190,8 +196,6 @@ config_free :: proc(cfg: ^Config) {
 	delete(cfg.state)
 	for s in cfg.sources {
 		delete(s.name); delete(s.adapter); delete(s.sock); delete(s.bus_name)
-		delete(s.cmd)
-		for a in s.exec do delete(a)
 		delete(s.exec)
 		for a in s.dbus do delete(a)
 		delete(s.dbus)
@@ -224,7 +228,7 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 		src: ^Source
 		ok: bool
 		switch {
-		case len(spec.exec) > 0:
+		case spec.exec != "":
 			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.every)
 		case spec.sock != "":
 			src, ok = src_sock(ss, spec.name, spec.sock, a)
@@ -256,7 +260,6 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			continue
 		}
 		src.thr = spec.throttle
-		src.cmd_path = strings.clone(spec.cmd)
 		started += 1
 	}
 	return started

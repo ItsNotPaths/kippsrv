@@ -2,7 +2,7 @@
 //
 // A signal becomes the JSON busctl already prints, so one adapter works
 // whether a fact arrives by poll or by signal.
-// (hole kippbus-match :tags bus :needs exec-stdin) the bus connection lives in kippsrv; v2 moves it to kippbus match: JSON out, call lines in on stdin.
+// (hole kippbus-match :tags bus) the bus connection lives in kippsrv; v2 moves it to kippbus match: JSON out, call lines in on stdin.
 package kippsrv
 
 import "base:runtime"

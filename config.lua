@@ -19,24 +19,23 @@ return {
 
 		-- Hyprland. The first reads what is true now, the second the changes.
 		{ name = "wm-seed", adapter = "lua/wm/hypr.lua",
-		  exec = {"hyprctl", "monitors", "-j"} },
+		  exec = "hyprctl monitors -j" },
 
 		{ name = "wm", adapter = "lua/wm/hypr.lua",
 		  sock = "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock" },
 
 		-- dwl hands its status to one child, so kippsrv is that child.
-		-- { name = "wm", adapter = "lua/wm/dwl.lua", exec = {"dwl", "-s", "cat"} },
+		-- { name = "wm", adapter = "lua/wm/dwl.lua", exec = "dwl -s cat" },
 
 		-- sway. swaymsg prints one JSON object a line, so all three of
 		-- these are exec sources with no protocol work. The seeds run
 		-- once; the stream runs until sway exits.
 		-- { name = "mon-seed", adapter = "lua/wm/sway.lua",
-		--   exec = {"swaymsg", "-t", "get_outputs", "-r"} },
+		--   exec = "swaymsg -t get_outputs -r" },
 		-- { name = "tag-seed", adapter = "lua/wm/sway.lua",
-		--   exec = {"swaymsg", "-t", "get_workspaces", "-r"} },
+		--   exec = "swaymsg -t get_workspaces -r" },
 		-- { name = "wm", adapter = "lua/wm/sway.lua",
-		--   exec = {"swaymsg", "-m", "-t", "subscribe",
-		--           '["workspace","window","mode"]'} },
+		--   exec = [[swaymsg -m -t subscribe '["workspace","window","mode"]']] },
 
 		-- bluez, on the system bus. The stream is listed first on purpose:
 		-- both sources share the adapter file, and a command is answered by
@@ -48,11 +47,11 @@ return {
 		          "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties'"} },
 
 		{ name = "bt-seed", adapter = "lua/bt/bluez.lua",
-		  exec = {"busctl", "--system", "--json=short", "call", "org.bluez", "/",
-		          "org.freedesktop.DBus.ObjectManager", "GetManagedObjects"} },
+		  exec = "busctl --system --json=short call org.bluez / " ..
+		         "org.freedesktop.DBus.ObjectManager GetManagedObjects" },
 
 		{ name = "net", adapter = "lua/net/nm.lua",
-		  exec = {"nmcli", "-t", "-f", "UUID,NAME,TYPE,DEVICE", "connection", "show"},
+		  exec = "nmcli -t -f UUID,NAME,TYPE,DEVICE connection show",
 		  every = 5000 },
 
 		-- throttle = false: a person drives these. Backing off would mean
@@ -61,9 +60,9 @@ return {
 		-- volume is a PipeWire subscription, and
 		-- /sys/class/backlight/*/brightness is watchable.
 		{ name = "audio", adapter = "lua/audio/pw.lua", throttle = false,
-		  exec = {"pactl", "list", "short", "sinks"}, every = 2000 },
+		  exec = "pactl list short sinks", every = 2000 },
 
 		{ name = "backlight", adapter = "lua/backlight/brightnessctl.lua",
-		  throttle = false, exec = {"brightnessctl", "-m"}, every = 2000 },
+		  throttle = false, exec = "brightnessctl -m", every = 2000 },
 	},
 }

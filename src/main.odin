@@ -71,13 +71,12 @@ main :: proc() {
 
 	fmt.eprintfln("serving %s, %d sources", cfg.socket, n)
 
-	// Without this, SIGTERM kills the process outright: the socket file is
-	// left behind, the store is not closed, and no child is signalled.
 	l := Loop{srv = srv, src = &ss, store = &store}
 
 	// Without this, SIGTERM kills the process outright: the socket file is
 	// left behind, the store is not closed, and no child is signalled.
 	the_loop = &l
+	posix.signal(.SIGPIPE, auto_cast posix.SIG_IGN)   // a child that exits closes its stdin
 	posix.signal(.SIGINT, on_signal)
 	posix.signal(.SIGTERM, on_signal)
 

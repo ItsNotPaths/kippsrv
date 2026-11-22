@@ -19,7 +19,7 @@ return {
 	state  = "$SOCK.state",
 	sources = {
 		{ name = "wm", adapter = "lua/wm/dwl.lua",
-		  exec = {"cat", "test/fmt/dwl.txt"} },
+		  exec = "cat test/fmt/dwl.txt" },
 	},
 }
 CONFEOF

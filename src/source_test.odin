@@ -36,8 +36,7 @@ exec_source_splits_lines :: proc(t: ^testing.T) {
 	a, ok := vm_load(v, "lua/wm/example.lua")
 	if !testing.expect(t, ok) do return
 
-	_, spawned := src_exec(&ss, "printf",
-	                       {"printf", "focus eDP-1 3\n\n\nfocus HDMI-A-1 9\n"}, a)
+	_, spawned := src_exec(&ss, "printf", `printf 'focus eDP-1 3\n\n\nfocus HDMI-A-1 9\n'`, a)
 	if !testing.expect(t, spawned, "src_exec") do return
 
 	out := drain(&ss)
@@ -45,6 +44,24 @@ exec_source_splits_lines :: proc(t: ^testing.T) {
 	for l in out do fmt.printfln("    %s", l)
 	testing.expect_value(t, len(out), 4)
 	testing.expect(t, !ss.list[0].dead, "a blank line must not stop the source")
+}
+
+// stdin is the way back: a line sent to an exec source reaches the child.
+@(test)
+a_line_sent_reaches_the_child :: proc(t: ^testing.T) {
+	v, _ := vm_open()
+	defer vm_close(v)
+	ss := Sources{vm = v}
+	defer src_close(&ss)
+
+	a, ok := vm_load(v, "lua/wm/example.lua")
+	if !testing.expect(t, ok) do return
+	s, spawned := src_exec(&ss, "cat", "cat", a)
+	if !testing.expect(t, spawned) do return
+
+	testing.expect(t, src_send(s, transmute([]byte)string("focus eDP-1 5\n")))
+	out := drain(&ss, 10)        // cat never ends, so a short budget
+	testing.expect_value(t, len(out), 2)
 }
 
 // The last record of a multi-line format has no terminator. EOF is the
@@ -59,7 +76,7 @@ eof_flushes_the_last_record :: proc(t: ^testing.T) {
 	a, ok := vm_load(v, "lua/power/upower.lua")
 	if !testing.expect(t, ok) do return
 
-	_, spawned := src_exec(&ss, "cat", {"cat", "test/fmt/upower.txt"}, a)
+	_, spawned := src_exec(&ss, "cat", "cat test/fmt/upower.txt", a)
 	if !testing.expect(t, spawned) do return
 
 	out := drain(&ss)
@@ -97,7 +114,7 @@ an_idle_source_backs_off :: proc(t: ^testing.T) {
 	defer src_close(&ss)
 
 	a, _ := vm_load(v, "lua/wm/example.lua")
-	s, ok := src_exec(&ss, "p", {"true"}, a, 2000)
+	s, ok := src_exec(&ss, "p", "true", a, 2000)
 	if !testing.expect(t, ok) do return
 
 	s.done = true
@@ -136,7 +153,7 @@ a_throttled_source_holds_the_newest_unit :: proc(t: ^testing.T) {
 	defer src_close(&ss)
 
 	a, _ := vm_load(v, "lua/wm/example.lua")
-	s, ok := src_exec(&ss, "p", {"true"}, a, 0)
+	s, ok := src_exec(&ss, "p", "true", a, 0)
 	if !testing.expect(t, ok) do return
 	s.thr.min_gap = 10_000
 

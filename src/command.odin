@@ -49,7 +49,7 @@ cmd_bind :: proc(ss: ^Sources) {
 	outbound = ss
 }
 
-// (hole requests :tags broker :needs (exec-stdin source-call)) offers each command to every source in order; v2 adapters subscribe to request topics.
+// (hole requests :tags broker :needs (source-call)) offers each command to every source in order; v2 adapters subscribe to request topics.
 command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 	if outbound == nil do return
 	about := fmt.tprintf("topic=%s", m.topic)

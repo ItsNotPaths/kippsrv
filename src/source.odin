@@ -29,9 +29,9 @@ Source :: struct {
 	pid:     posix.pid_t,
 	adapter: Adapter,
 	buf:     [dynamic]byte,
-	argv:    []string,   // exec, kept so it can be run again
+	exec:    string,     // the command, kept so it can be run again
+	input:   posix.FD,   // exec: the child's stdin, or -1
 	path:    string,     // sock, kept so it can be dialled again
-	cmd_path: string,    // where a command goes out, when it is not the socket
 	base:    i64,        // the period the configuration asked for
 	every:   i64,        // the period in use, which backoff can stretch
 	idle:    int,        // cycles in a row that changed nothing
@@ -111,84 +111,63 @@ add :: proc(ss: ^Sources, s: ^Source) -> ^Source {
 	s.buf = make([dynamic]byte)
 	s.held = make([dynamic]byte)
 	s.thr = THROTTLE
+	if s.kind != .Exec do s.input = -1
 	ss.next_id += 1
 	s.id = ss.next_id
 	append(&ss.list, s)
 	return s
 }
 
-// Spawn a command and read its stdout.
-// A command that ends and is run again on a period. `every` of 0 runs it once.
-// (hole exec-sh :tags sources) runs an argv list; v2 runs the exec string with sh -c.
-src_exec :: proc(ss: ^Sources, name: string, argv: []string, adapter: Adapter,
-                 every: i64 = 0) -> (^Source, bool) {
+// `sh -c` the command. Its stdout is read, its stdin is the way back.
+@(private = "file")
+spawn :: proc(command: string) -> (out, input: posix.FD, pid: posix.pid_t, ok: bool) {
 	// Built before the fork. Between fork and exec only async-signal-safe
 	// calls are allowed, and an allocator whose lock another thread held at
 	// fork time will never unlock in the child.
-	cargv := make([]cstring, len(argv) + 1)
-	defer delete(cargv)
-	for a, i in argv do cargv[i] = strings.clone_to_cstring(a)
-	defer for cs in cargv[:len(argv)] do delete(cs)
-	cargv[len(argv)] = nil
+	argv := [4]cstring{"/bin/sh", "-c", strings.clone_to_cstring(command, context.temp_allocator), nil}
 
-	fds: [2]posix.FD
-	// (hole exec-stdin :tags sources) the child gets only a stdout pipe; v2 also gives it stdin, as the way back.
-	if posix.pipe(&fds) != .OK do return nil, false
+	reads, writes: [2]posix.FD
+	if posix.pipe(&reads) != .OK do return -1, -1, 0, false
+	if posix.pipe(&writes) != .OK {
+		posix.close(reads[0]); posix.close(reads[1])
+		return -1, -1, 0, false
+	}
 
-	pid := posix.fork()
+	pid = posix.fork()
 	if pid < 0 {
-		posix.close(fds[0]); posix.close(fds[1])
-		return nil, false
+		for fd in ([]posix.FD{reads[0], reads[1], writes[0], writes[1]}) do posix.close(fd)
+		return -1, -1, 0, false
 	}
 	if pid == 0 {
-		posix.dup2(fds[1], posix.STDOUT_FILENO)
-		posix.close(fds[0])
-		posix.close(fds[1])
-		posix.execvp(cargv[0], raw_data(cargv))
+		posix.dup2(reads[1], posix.STDOUT_FILENO)
+		posix.dup2(writes[0], posix.STDIN_FILENO)
+		for fd in ([]posix.FD{reads[0], reads[1], writes[0], writes[1]}) do posix.close(fd)
+		posix.signal(.SIGPIPE, auto_cast posix.SIG_DFL)   // an ignored signal survives exec
+		posix.execv("/bin/sh", raw_data(argv[:]))
 		posix._exit(127)
 	}
 
-	posix.close(fds[1])
-	set_flags(fds[0])
+	posix.close(reads[1])
+	posix.close(writes[0])
+	set_flags(reads[0])
+	set_flags(writes[1])
+	return reads[0], writes[1], pid, true
+}
 
-	kept := make([]string, len(argv))
-	for a, i in argv do kept[i] = strings.clone(a)
-
-
+// A command that ends and is run again on a period. `every` of 0 runs it once.
+src_exec :: proc(ss: ^Sources, name, command: string, adapter: Adapter,
+                 every: i64 = 0) -> (source: ^Source, ok: bool) {
+	out, input, pid := spawn(command) or_return
 	return add(ss, new_clone(Source{
-		name = strings.clone(name), kind = .Exec, fd = fds[0], pid = pid,
-		adapter = adapter, argv = kept, every = every, base = every,
+		name = strings.clone(name), kind = .Exec, fd = out, input = input, pid = pid,
+		adapter = adapter, exec = strings.clone(command), every = every, base = every,
 	})), true
 }
 
 // Its adapter and its state survive, so a poll builds on the last run.
 @(private = "file")
 respawn :: proc(s: ^Source) -> bool {
-	cargv := make([]cstring, len(s.argv) + 1)
-	defer delete(cargv)
-	for a, i in s.argv do cargv[i] = strings.clone_to_cstring(a)
-	defer for cs in cargv[:len(s.argv)] do delete(cs)
-	cargv[len(s.argv)] = nil
-
-	fds: [2]posix.FD
-	if posix.pipe(&fds) != .OK do return false
-
-	pid := posix.fork()
-	if pid < 0 {
-		posix.close(fds[0]); posix.close(fds[1])
-		return false
-	}
-	if pid == 0 {
-		posix.dup2(fds[1], posix.STDOUT_FILENO)
-		posix.close(fds[0])
-		posix.close(fds[1])
-		posix.execvp(cargv[0], raw_data(cargv))
-		posix._exit(127)
-	}
-	posix.close(fds[1])
-	set_flags(fds[0])
-	s.fd = fds[0]
-	s.pid = pid
+	s.fd, s.input, s.pid = spawn(s.exec) or_return
 	s.done = false
 	s.settled = false
 	clear(&s.buf)
@@ -260,33 +239,19 @@ src_timer :: proc(ss: ^Sources, name: string, every_ms: i64,
 
 // ------------------------------------------------------------- outbound
 
-// A command leaves the daemon here, and nowhere else.
+// A line back to the source: an exec's stdin, or a sock's connection.
 //
-// A source that names `cmd` has that path opened for the write and closed
-// after it. The channel is a FIFO, opening one costs microseconds, and a
-// window manager that restarted since the last command is found rather than
-// written into the inode it left behind. A socket source with no `cmd`
-// answers on the connection it already has.
-//
-// The line limit is what makes a write whole or nothing: a FIFO write under
+// The line limit is what makes a write whole or nothing: a pipe write under
 // PIPE_BUF cannot interleave with another writer's.
-// (hole exec-stdin) writes to a sock source or a cmd= path; v2 writes to stdin or the socket, and cmd= goes.
 src_send :: proc(s: ^Source, data: []byte) -> bool {
-	if len(data) == 0 || len(data) > MAX_LINE do return false
-
-	fd := s.fd
-	opened := false
-	if s.cmd_path != "" {
-		cs := strings.clone_to_cstring(s.cmd_path, context.temp_allocator)
-		fd = posix.open(cs, {.WRONLY, .NONBLOCK, .CLOEXEC})
-		if fd < 0 do return false
-		opened = true
-	} else if s.kind != .Sock || s.done || s.fd < 0 {
-		return false
+	if len(data) == 0 || len(data) > MAX_LINE || s.done do return false
+	fd: posix.FD
+	#partial switch s.kind {
+	case .Exec: fd = s.input
+	case .Sock: fd = s.fd
+	case:       return false
 	}
-	defer if opened do posix.close(fd)
-
-	return int(posix.write(fd, raw_data(data), c.size_t(len(data)))) == len(data)
+	return fd >= 0 && int(posix.write(fd, raw_data(data), c.size_t(len(data)))) == len(data)
 }
 
 src_close :: proc(ss: ^Sources) {
@@ -300,11 +265,10 @@ src_close :: proc(ss: ^Sources) {
 		} else if s.fd >= 0 {
 			posix.close(s.fd)
 		}
+		if s.input >= 0 do posix.close(s.input)
 		if s.pid > 0 do posix.kill(s.pid, .SIGTERM)
-		for a in s.argv do delete(a)
-		delete(s.argv)
+		delete(s.exec)
 		delete(s.path)
-		delete(s.cmd_path)
 		delete(s.buf)
 		delete(s.held)
 		delete(s.name)
@@ -484,6 +448,8 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 			emit_into(&out, vm_flush(ss.vm, s.adapter), s.id)
 			posix.close(s.fd)
 			s.fd = -1
+			if s.input >= 0 do posix.close(s.input)
+			s.input = -1
 			s.done = true
 
 			// A poll ends every cycle by design, and a one-shot seed ends
