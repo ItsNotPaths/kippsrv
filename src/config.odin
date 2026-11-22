@@ -16,6 +16,7 @@ Config :: struct {
 	socket:  string,
 	state:   string,
 	sources: [dynamic]Src_Spec,   // every source declared, claim-only ones too
+	refused: int,                 // files that did not load
 }
 
 Src_Spec :: struct {
@@ -162,19 +163,31 @@ spec_free :: proc(s: ^Src_Spec) {
 
 // ---------------------------------------------------------------- loading
 
-// The user's folder, then each of XDG_DATA_DIRS, most important first.
+// The XDG folders, with the spec's defaults.
+config_home :: proc() -> string {
+	folder := os.get_env("XDG_CONFIG_HOME", context.temp_allocator)
+	return folder if folder != "" else fmt.tprintf("%s/.config", os.get_env("HOME", context.temp_allocator))
+}
+
+data_home :: proc() -> string {
+	folder := os.get_env("XDG_DATA_HOME", context.temp_allocator)
+	return folder if folder != "" else fmt.tprintf("%s/.local/share", os.get_env("HOME", context.temp_allocator))
+}
+
+data_dirs :: proc() -> []string {
+	folders := os.get_env("XDG_DATA_DIRS", context.temp_allocator)
+	if folders == "" do folders = "/usr/local/share:/usr/share"
+	return strings.split(folders, ":", context.temp_allocator)
+}
+
+// The user's own files, then what `kippsrv --install` unfurled, then each of
+// XDG_DATA_DIRS: most important first.
 @(private = "file")
 source_folders :: proc() -> []string {
-	config_home := os.get_env("XDG_CONFIG_HOME", context.temp_allocator)
-	if config_home == "" {
-		config_home = fmt.tprintf("%s/.config", os.get_env("HOME", context.temp_allocator))
-	}
-	data_dirs := os.get_env("XDG_DATA_DIRS", context.temp_allocator)
-	if data_dirs == "" do data_dirs = "/usr/local/share:/usr/share"
-
 	folders := make([dynamic]string, context.temp_allocator)
-	append(&folders, fmt.tprintf("%s/kippsrv/sources.d", config_home))
-	for folder in strings.split(data_dirs, ":", context.temp_allocator) {
+	append(&folders, fmt.tprintf("%s/kippsrv/sources.d", config_home()))
+	append(&folders, fmt.tprintf("%s/kippsrv/sources.d", data_home()))
+	for folder in data_dirs() {
 		if folder != "" do append(&folders, fmt.tprintf("%s/kippsrv/sources.d", folder))
 	}
 	return folders[:]
@@ -246,6 +259,7 @@ load_file :: proc(v: ^Vm, cfg: ^Config, path: string) {
 	v.declared = nil
 	if !ok {
 		for &s in declared do spec_free(&s)
+		cfg.refused += 1
 		return
 	}
 
@@ -271,6 +285,7 @@ load_file :: proc(v: ^Vm, cfg: ^Config, path: string) {
          owner. [E-claim] See DIAGNOSTICS.md.`, path, reason)
 		vm_unload(v, adapter)
 		for &s in declared do spec_free(&s)
+		cfg.refused += 1
 		return
 	}
 	for &s in declared {

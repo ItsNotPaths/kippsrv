@@ -1,7 +1,8 @@
 // kippbus: one D-Bus connection, run by kippsrv as an exec source. Lines go
 // out on stdout and requests come in on stdin.
 //
-//   kippbus match [--system] <rule>...   each matching signal as JSON
+//   kippbus match [--system] [--names <namespace> [--each <call>]] <rule>...
+//                                        each matching signal as JSON
 //   kippbus tray [<name>]                owns the StatusNotifierWatcher
 //   kippbus notify [<name>]              owns org.freedesktop.Notifications
 //
@@ -43,7 +44,7 @@ main :: proc() {
 
 @(private = "file")
 usage :: proc() -> ! {
-	fmt.eprintln("usage: kippbus match [--system] <rule>... | tray [<name>] | notify [<name>]")
+	fmt.eprintln("usage: kippbus match [--system] [--names <namespace> [--each <call>]] <rule>... | tray [<name>] | notify [<name>]")
 	os.exit(2)
 }
 

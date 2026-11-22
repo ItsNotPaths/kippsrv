@@ -16,6 +16,8 @@ on_signal :: proc "c" (sig: posix.Signal) {
 }
 
 main :: proc() {
+	if len(os.args) > 1 do os.exit(command(os.args[1:]))
+
 	// A crash would otherwise write every window title and SSID we hold into
 	// a core file that outlives the session. This is per-process: it does
 	// not touch the system setting, and a command we spawn gets its own

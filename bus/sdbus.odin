@@ -8,7 +8,7 @@ import "core:strings"
 Bus :: struct {}
 Bus_Message :: struct {}
 
-// basu: sd-bus without systemd, built by the Makefile and linked in.
+// basu: sd-bus without systemd, built by download-deps.sh and linked in.
 foreign import sdbus "system:basu"
 
 @(default_calling_convention = "c", link_prefix = "sd_")
@@ -22,6 +22,7 @@ foreign sdbus {
 	bus_request_name                 :: proc(bus: ^Bus, name: cstring, flags: u64) -> c.int ---
 	bus_add_object_vtable            :: proc(bus: ^Bus, slot: rawptr, path, interface: cstring, vtable: [^]Vtable, user: rawptr) -> c.int ---
 	bus_send                         :: proc(bus: ^Bus, message: ^Bus_Message, cookie: ^u64) -> c.int ---
+	bus_call                         :: proc(bus: ^Bus, message: ^Bus_Message, timeout: u64, error: rawptr, reply: ^^Bus_Message) -> c.int ---
 	// _strv, not the varargs form: see bus_message_new_method_return.
 	bus_emit_properties_changed_strv :: proc(bus: ^Bus, path, interface: cstring, names: [^]cstring) -> c.int ---
 
@@ -30,6 +31,7 @@ foreign sdbus {
 	bus_message_get_interface        :: proc(message: ^Bus_Message) -> cstring ---
 	bus_message_get_member           :: proc(message: ^Bus_Message) -> cstring ---
 	bus_message_get_sender           :: proc(message: ^Bus_Message) -> cstring ---
+	bus_message_get_type             :: proc(message: ^Bus_Message, type: ^u8) -> c.int ---
 	bus_message_peek_type            :: proc(message: ^Bus_Message, type: ^u8, contents: ^cstring) -> c.int ---
 	bus_message_read_basic           :: proc(message: ^Bus_Message, type: u8, value: rawptr) -> c.int ---
 	bus_message_enter_container      :: proc(message: ^Bus_Message, type: u8, contents: cstring) -> c.int ---
@@ -180,23 +182,50 @@ append_argument :: proc(message: ^Bus_Message, type: u8, text: string) -> bool {
 	return false   // a container needs a shape, and text carries none
 }
 
+@(private = "file")
+new_call :: proc(destination, path, interface, member, signature: string,
+                 arguments: []string) -> (message: ^Bus_Message, ok: bool) {
+	if destination == "" || path == "" || interface == "" || member == "" do return nil, false
+	if len(signature) != len(arguments) do return nil, false
+
+	if bus_message_new_method_call(connection, &message, cstr(destination), cstr(path),
+	                               cstr(interface), cstr(member)) < 0 {
+		return nil, false
+	}
+	for argument, index in arguments {
+		if !append_argument(message, signature[index], argument) {
+			bus_message_unref(message)
+			return nil, false
+		}
+	}
+	return message, true
+}
+
 // No reply is asked for: the facts that follow show what the call did, and a
 // slow application cannot stall the loop.
 call_method :: proc(destination, path, interface, member, signature: string,
                     arguments: []string) -> bool {
-	if destination == "" || path == "" || interface == "" || member == "" do return false
-	if len(signature) != len(arguments) do return false
-
-	message: ^Bus_Message
-	if bus_message_new_method_call(connection, &message, cstr(destination), cstr(path),
-	                               cstr(interface), cstr(member)) < 0 {
-		return false
-	}
+	message := new_call(destination, path, interface, member, signature, arguments) or_return
 	defer bus_message_unref(message)
-
-	for argument, index in arguments {
-		if !append_argument(message, signature[index], argument) do return false
-	}
 	bus_message_set_expect_reply(message, 0)
 	return bus_send(connection, message, nil) >= 0
+}
+
+// The reply arrives through the loop, like a signal. sd_bus_send marks a
+// message sent without a cookie as wanting no reply.
+call_method_with_reply :: proc(destination, path, interface, member, signature: string,
+                               arguments: []string) -> bool {
+	message := new_call(destination, path, interface, member, signature, arguments) or_return
+	defer bus_message_unref(message)
+	cookie: u64
+	return bus_send(connection, message, &cookie) >= 0
+}
+
+// Blocks until the reply, so for start-up only.
+call_method_and_wait :: proc(destination, path, interface, member, signature: string,
+                             arguments: []string) -> (reply: ^Bus_Message, ok: bool) {
+	message := new_call(destination, path, interface, member, signature, arguments) or_return
+	defer bus_message_unref(message)
+	if bus_call(connection, message, 0, nil, &reply) < 0 do return nil, false
+	return reply, true
 }

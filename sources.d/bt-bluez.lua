@@ -1,19 +1,17 @@
--- bluez, on the system bus. Two ways in, like every D-Bus adapter here: a
--- GetManagedObjects poll for what is true now, and InterfacesAdded,
--- InterfacesRemoved and PropertiesChanged from kippbus match for what changes
--- after. Requests go back out as call lines on the stream's stdin.
+-- bluez, on the system bus, through kippbus match: GetManagedObjects when
+-- bluez appears, for what is true now, then InterfacesAdded, InterfacesRemoved
+-- and PropertiesChanged for what changes after. Requests go back out as call
+-- lines on the stream's stdin.
 --
 -- A device is one object path, and everything about it arrives in pieces:
 -- the name with the device, the battery when it connects, one property at a
 -- time after that. The record is kept here and the whole fact is republished.
 local claim = {"bt/*", "bt_radio/*"}
 source { name = "bt", retains = claim, takes = "bt/request",
-         exec = [[kippbus match --system ]] ..
+         exec = [[kippbus match --system --names org.bluez ]] ..
+                [[--each "/ org.freedesktop.DBus.ObjectManager GetManagedObjects" ]] ..
                 [["type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager'" ]] ..
                 [["type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties'"]] }
-source { name = "bt-seed", retains = claim,
-         exec = "busctl --system --json=short call org.bluez / " ..
-                "org.freedesktop.DBus.ObjectManager GetManagedObjects" }
 
 local BLUEZ   = "org.bluez"
 local DEVICE  = "org.bluez.Device1"
@@ -136,7 +134,18 @@ function feed(line)
 	if not message then return end
 	local body = message.body
 
-	if message.member == "InterfacesAdded" then
+	if message.type == "left" and message.name == BLUEZ then
+		for path in pairs(devices) do gone(path, DEVICE) end
+		for path in pairs(radios) do gone(path, RADIO) end
+
+	elseif message.type == "method_return" and message.name == BLUEZ then
+		for path, interfaces in pairs(value(body[1]) or {}) do
+			for interface, properties in pairs(value(interfaces)) do
+				take(path, interface, value(properties))
+			end
+		end
+
+	elseif message.member == "InterfacesAdded" then
 		local path = value(body[1])
 		for interface, properties in pairs(value(body[2]) or {}) do
 			take(path, interface, value(properties))
@@ -150,13 +159,6 @@ function feed(line)
 
 	elseif message.member == "PropertiesChanged" then
 		take(message.path, value(body[1]), value(body[2]) or {})
-
-	elseif message.data then                  -- a GetManagedObjects poll
-		for path, interfaces in pairs(message.data[1] or {}) do
-			for interface, properties in pairs(value(interfaces)) do
-				take(path, interface, value(properties))
-			end
-		end
 	end
 end
 

@@ -2,370 +2,158 @@
 
 Desktop state on one socket.
 
-kippsrv reads every scattered source on the machine, normalizes what they say
-into one vocabulary, and publishes it as [kipp](https://github.com/ItsNotPaths/kipp). A window manager, bluez,
-NetworkManager, PipeWire, the tray. One socket, one format, and a consumer that
-connects at any moment gets the whole truth before the changes.
+kippsrv runs the programs that know your desktop's state (the window manager,
+bluez, NetworkManager, PipeWire, media players, the tray) and publishes what
+they say on one unix socket, in [kipp](https://github.com/ItsNotPaths/kipp). A
+program that subscribes at any moment gets the current values first, then each
+change.
 
-Odin with an embedded Lua VM. One Lua file for each foreign source.
+## Thanks
 
-It is not a broker. It never learns who reads it, so a new consumer costs it
-nothing and a new source costs it one Lua file.
+- **Andy Stanford-Clark and Arlen Nipper**, who designed [MQTT](https://mqtt.org).
+  kipp takes MQTT's model and its names for things (topics, retained values,
+  publishes, subscriptions, wills) and writes them as lines of text.
+- **Tony Garnock-Jones**, whose PhD thesis built [Syndicate](https://syndicate-lang.org/).
+  kippsrv borrows its rule that a fact lives only as long as whatever asserted
+  it: when a media player or a D-Bus service goes away, its facts go with it.
+
+## What it looks like
+
+A kipp line is a verb, a topic, and `key=value` fields, separated by tabs:
+
+```
+retain	media/firefox/instance_1_719	status=Paused	title=Home / X	artist=	length=17
+```
+
+kippsrv is also a small broker. Other programs connect, subscribe to topics,
+and publish facts of their own. A source that does not speak kipp gets an
+adapter: a Lua file that turns its output into kipp lines, run in a VM inside
+kippsrv. kippsrv itself is written in Odin.
+
+## Install and run
+
+You need the [Odin](https://odin-lang.org) compiler, git, and meson, ninja and
+gperf (for basu, below).
 
 ```sh
-make
-./kippsrv config.lua
-socat -u UNIX-CONNECT:"$XDG_RUNTIME_DIR/kippsrv.sock" -
+./download-deps.sh       # once: checks the tools, builds basu into vendor/
+./build.sh               # kippsrv and kippbus into build/
+build/kippsrv --install  # both into ~/.local/bin, the shipped source files into ~/.local/share
+kippsrv                  # stays in the foreground; start it from your session's autostart
 ```
 
+In a second terminal, with `socat`:
+
+```sh
+(printf 'connect\tme\nsubscribe\t*\n'; cat) | socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/kippsrv.sock"
 ```
-version    1  kippsrv  proto=1
-mon        eDP-1  w=2256  h=1504  scale=1.5
-focus      eDP-1
-tag        eDP-1  2  state=focused,occupied
-net        c8119aa9-f0e2  name=Smith  type=802-11-wireless  state=up
-sink       alsa_output.pci-0000_01_00.1  state=suspended
-sync       state
-```
+
+You get every current value, then each change as it happens. `kippsrv --uninstall`
+removes every file of kippsrv. HOWTO.md section
+3 explains what comes back.
+
+**[HOWTO.md](HOWTO.md)** covers the rest: which sources ship and what they
+need, reading from kippsrv, writing a source file and an adapter, taking
+requests, connecting your own program, and D-Bus. The binary carries it:
+`kippsrv howto <word>` prints the parts about a word, and `kippsrv --help`
+lists the rest. **[DIAGNOSTICS.md](DIAGNOSTICS.md)**
+explains every message with a code in brackets.
 
 ## What is here
 
 | | |
 | --- | --- |
-| `src/kipp.odin` | the wire: parse, build, serve, dump, broadcast |
+| `src/kipp.odin` | the wire: parse, build, serve, subscribe, broadcast |
 | `src/loop.odin` | `poll()`. The only place that blocks |
-| `src/lua.odin` | the VM, the fence, a seven-function script surface |
-| `src/source.odin` | foreign sources and their framing |
-| `src/store.odin` | current truth: dedup, the dump, the projection |
-| `src/command.odin` | the outbound seam: a command, offered to each source |
-| `src/config.odin` | the configuration file, which is Lua |
-| `src/main.odin` | load the config, serve, run |
+| `src/lua.odin` | the VM and the sandbox around it |
+| `src/source.odin` | running sources and cutting their output into lines |
+| `src/store.odin` | the last value of each topic, and `kippsrv.state`, a copy of them for scripts |
+| `src/command.odin` | requests: a publish, to every source that takes it |
+| `src/config.odin` | source files: found, loaded, claims checked |
+| `src/main.odin` | load the source files, serve, run |
 | `bus/` | kippbus, the one D-Bus program, run by kippsrv as a source |
+| `sources.d/` | the shipped source files, in their installed layout |
 
-Thirteen adapters across eight domains in `lua/`. A consumer reads the whole
-desktop off one socket, and drives what only this process can reach.
+## Design notes
 
-## Configuration is Lua
+### The store
 
-`config.lua` returns a table. It runs in the same fenced VM as an adapter, so
-it cannot read a file or open a socket either, and no key means "run this".
-`$VAR` and `~` are expanded by kippsrv, so nothing in Lua reaches a variable it
-was not handed.
+The store keeps the last value of each topic. It is what lets a consumer join
+at any moment: a subscriber gets those values first and never needs the
+history.
 
-```lua
-return {
-	socket = "$XDG_RUNTIME_DIR/kippsrv.sock",
-	state  = "$XDG_RUNTIME_DIR/kippsrv.state",
-	sources = {
-		{ name = "tray", watcher = true, adapter = "lua/tray/snw.lua" },
-		{ name = "notify", notify = true, adapter = "lua/notify/fdo.lua" },
+It also drops repeats. `nmcli` reprints every connection whenever anything
+changes, and a poll rereads the same battery percentage all day, but only a
+line that changed reaches the socket. That spares every consumer, but the source
+does the same work as it would without a store: a poll still pays a fork, an
+exec, a read and a Lua call to learn that nothing moved. Prefer a source that streams changes
+(`kippbus match`, a socket) to one that polls.
 
-		{ name = "wm-seed", adapter = "lua/wm/hypr.lua",
-		  exec = {"hyprctl", "monitors", "-j"} },
-		{ name = "wm", adapter = "lua/wm/hypr.lua",
-		  sock = "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock" },
+### Topics are identities
 
-		{ name = "net", adapter = "lua/net/nm.lua", every = 5000,
-		  exec = {"nmcli","-t","-f","UUID,NAME,TYPE,DEVICE","connection","show"} },
-	},
-}
-```
+A topic names a thing, and the payload holds its value. Build a topic from
+something that cannot change: a UUID, a MAC, a bus name, a device path. A title
+or a percentage in the topic would make every value a separate entry, and the
+store would keep all of them.
 
-An adapter file is loaded once however many sources name it. That is what lets
-the seed and the stream above share one state: `hyprctl monitors -j` sets the
-focused monitor, and socket2 uses it.
+kippsrv checks no topic names. They are a deal between a publisher and its
+subscribers, and an adapter may retain a topic nobody has heard of. A test
+fails if that stops being true.
 
-A source with `every` runs again on that period. A command that ends becomes a
-poll, so there is no separate polling concept.
+### The sandbox
 
-## Sources and framing
-
-| Kind | Gives |
-| --- | --- |
-| `exec` | spawn a command, read its output |
-| `sock` | connect to a unix socket |
-| `timer` | fire on a period and call `tick` |
-
-A source owns the descriptor **and the framing**, so an adapter always gets a
-whole unit. Nothing in Lua reassembles a torn line or a torn frame.
-
-| Framing | Splits on |
-| --- | --- |
-| `Lines` | a newline. Nearly every text tool |
-| `Prefix{header, at, width, le}` | a length field in a fixed header. i3 and sway are `{14, 6, 4, true}` |
-| `Raw` | nothing. Whatever arrived |
-
-The end of a descriptor ends a batch and calls `flush`. A last line with no
-trailing newline is still a line.
-
-## A quiet source is asked less often
-
-After three quiet cycles a source's period doubles, up to sixteen times the
-configured one or a minute, whichever is smaller. Anything new resets it.
-
-Measured here, 30 sources polling one command every 2 seconds:
-
-| | CPU |
-| --- | --- |
-| fixed period | 2.2% of a core, forever |
-| with backoff, settled | 0.5% |
-
-The CPU is not really the point. 15 process creations a second leaves no idle
-window longer than about 66 ms, so deep C-states never engage. A status bar is
-the last thing that should keep a laptop awake.
-
-`throttle` is the knob, per source. `throttle = false` turns it off. Use that
-for anything a person drives: press the volume key and a backed-off source can
-take 32 seconds to notice. `audio` and `backlight` are both `throttle = false`
-in the shipped config, and both are polls that should not exist. Volume is a
-PipeWire subscription, and `/sys/class/backlight/*/brightness` is watchable
-with inotify.
-
-A table names the parts, and the defaults are
-`throttle = { idle = 3, factor = 16, ceiling = 60000 }`. A `sock` or a long-running
-`exec` source has no period to stretch, so it is slowed the other way:
-`throttle = { min_gap = 250 }` calls the adapter at most once per 250 ms,
-holding the newest unit and dropping the ones behind it. Give that only to a
-source whose units restate current truth. A dropped event is gone.
-
-## The store
-
-A source repeats itself. `nmcli` reprints every connection whenever anything
-changes, and a poll rereads the same battery percentage all day. The store
-keeps the last value for each fact and passes on only what moved.
-
-A value is identified by its topic, so `retain tag/eDP-1/2 state=occupied`
-replaces `retain tag/eDP-1/2 state=focused` rather than sitting beside it.
-
-Only the adapter knows whether something has a current value:
-
-| Call | Means |
-| --- | --- |
-| `k.retain(topic, key=value, ...)` | a value. Stored, deduplicated, in the dump. No payload deletes it |
-| `k.publish(topic, key=value, ...)` | an event. Passed on, never stored |
-
-A file with no `feed` is for a program that prints kipp. Its `retain` and
-`publish` lines pass straight through.
-
-A source that dies does not lose its facts. They are marked `stale`, so a bar
-can grey out a headphone that still exists rather than claim it is gone.
-
-**The store is a correctness feature, not a performance one.** A repeat costs
-nothing downstream: the socket and every consumer are spared. Upstream it costs
-exactly as much as ever. A poll still pays a fork, an exec, a read and a Lua
-call to find out that nothing moved. Prefer `kippbus match` or `sock` to
-`every` wherever a source offers one.
-
-## Topics are identities
-
-A topic identifies a value. The value goes in the payload.
-
-Build a topic from something that cannot change: a UUID, a MAC, a bus name, a
-device path. A name a person typed goes in the payload, where `=` is legal,
-because only the first `=` separates a key from its value.
-
-```lua
-k.retain("net/" .. uuid, "name=home=wifi", "type=wifi")
-```
-
-A title or a percentage in the topic makes every value a separate entry, and
-the store keeps all of them.
-
-## One vocabulary
-
-A window manager adapter converts a foreign format into the kinds in
-`vocab/wm.txt`. Every adapter emits the same ones, so a bar carries one parser
-and never a file per window manager. Swapping Hyprland for dwl is one adapter
-file and one line of config, and no consumer notices.
-
-`make lint` makes drift visible: `lua/<domain>/<impl>.lua` may emit only the
-kinds in `vocab/<domain>.txt`. It has already caught some. The first two window
-manager adapters written here shared one kind out of nine.
-
-| Domain | Kinds | Implementations |
-| --- | --- | --- |
-| `wm` | 8 | hypr, dwl, i3/sway |
-| `net` | 1 | nm |
-| `audio` | 1 | pw |
-| `power` | 1 | upower |
-| `media` | 1 | mpris |
-| `backlight` | 1 | brightnessctl |
-| `tray` | 1 | snw |
-| `notify` | 1 | fdo |
-| `bt` | 2 | bluez |
-
-**These files are a lint, not a schema.** The daemon holds no vocabulary and
-consults nothing at run time. An adapter may emit a kind nobody has heard of
-and it reaches a consumer untouched, and there is a test that fails if that
-stops being true. `make lint` covers `lua/` and nothing else, so an adapter you
-write in your own config directory is never seen by it.
-
-A new domain is a directory and a file. `vocab.sh` walks `lua/*/`, so nothing
-holds a list of domains.
-
-What you give up by inventing a kind is that our bar will not draw it. Emitting
-`tag` is a benefit taken, not a permission asked for. That is the inverse of
-the Wayland problem, where a new noun costs a protocol, a compositor
-implementation and agreement upstream, so applications route around it instead.
-Here a new noun costs one line, and matching costs a page.
-
-**An event stream needs a seed.** socket2 reports what changed, not what is, so
-an adapter that has seen no events knows nothing. `hyprctl monitors -j` is a
-second source on the same adapter. One window manager is one file, however many
-sources it takes to read it.
-
-kippsrv holds no routes. It names sources, never consumers.
-
-## Commands go back out
-
-A consumer sends an uppercase line on the same connection. Each source is
-offered it in configuration order and the first adapter that answers owns it.
-
-| An adapter returns | The core does |
-| --- | --- |
-| no `request` at all | writes the request line itself to the source |
-| nothing | nothing |
-| a string | writes those bytes to the source's channel |
-| `nil, code, msg` | sends back that `error` line |
-
-A source that names `cmd` has that path opened for each write. One without it
-answers on the socket it already has. There is no third way out, and an adapter
-sees neither descriptor. `lua/wm/hedl.lua` is the first shape,
-`sources.d/bt-bluez.lua` the second, `src/command.odin` the whole of it.
-
-```lua
-{ name = "wm", adapter = "lua/wm/hedl.lua",
-  sock = "$XDG_RUNTIME_DIR/hedl/kipp", cmd = "$XDG_RUNTIME_DIR/hedl/cmd" },
-```
-
-**The path is narrow on purpose.** Most of what a consumer wants is to run a
-command, and anything can run a command. What is left is where kippsrv holds
-the only descriptor that reaches the thing.
-
-## The fence
-
-A script gets parsed lines and returns fields. It never holds a descriptor and
-never joins a line, so it cannot reach the filesystem or the network and cannot
-forge a fact with an embedded tab. `io`, `os`, `package`, `debug`, `coroutine`,
-`require`, `dofile`, `loadfile` and `load` do not exist inside it.
-
-That is one guarantee, not three. Dropping `io` says nothing about
-`while true do end`, and nothing about `string.rep("x", 1e9)`.
+An adapter gets lines and returns fields. It never holds a descriptor and never
+writes a raw line, so it cannot reach the filesystem or the network, and cannot
+forge a fact with an embedded tab. Three guards, each for a different failure:
 
 | Guard | Stops |
 | --- | --- |
-| the sandbox | reaching a file, a socket, or another process |
-| a count hook, ~2M instructions per call | a script that never returns |
+| no `io`, `os`, `package`, `debug`, `coroutine`, `require`, `dofile`, `loadfile` or `load` | reaching a file, a socket, or another process |
+| a count hook, about 2M instructions per call | a script that never returns |
 | a capped allocator, 64 MB | a script that asks for everything |
 
-The second does not cover the third. `string.rep` is one C call and a count
-hook only fires between VM instructions. Refusing an allocation raises an
-ordinary Lua memory error, which `pcall` catches, so the loop carries on either
-way.
+The second does not cover the third: `string.rep("x", 1e9)` is one C call, and
+a count hook only fires between VM instructions. Hitting either limit raises an
+ordinary Lua error. kippsrv logs it, loses that call's output, and carries on.
 
-`make lint` makes drift in the sandbox, the descriptor rule and the surface
-size visible in a diff. It does not prove them. A determined author routes
-around a grep, and what the check buys is that they have to notice they are
-doing it. The two budgets have their own tests.
+### Lint
 
-## D-Bus
+`tests/lint.sh` checks three rules by reading the source tree:
 
-kippsrv never learns what D-Bus is. `kippbus` is a second binary that holds one
-bus connection, and kippsrv runs it from an ordinary source file like any other
-command: lines out on stdout, requests in on stdin.
+- The core names no topic kind (the first part of a topic) that a shipped
+  adapter emits, so the core never learns what a domain is.
+- `src/lua.odin` never imports posix, so a script can never be handed a
+  descriptor.
+- kippsrv registers at most 12 functions in Lua. Today it registers 7:
+  `k.retain`, `k.publish`, `k.json`, `k.parse`, `k.log`, `print` and `source`.
 
-```
-kippbus match [--system] <rule>...   each matching signal as JSON
-kippbus tray [<name>]                owns org.kde.StatusNotifierWatcher
-kippbus notify [<name>]              owns org.freedesktop.Notifications
-```
+It does not prove them. A determined author can route around a grep, and the
+check makes sure they notice they are doing it.
 
-`<name>` owns a different name, for testing beside a live one.
+### A quiet source is asked less often
 
-### match
+A poll that finds nothing new for three runs in a row has its period doubled,
+up to sixteen times the configured one or a minute, whichever is smaller.
+Anything new resets it.
 
-```lua
-source { name = "media", retains = "media/*",
-         exec = [[kippbus match "type='signal',interface='org.freedesktop.DBus.Properties'"]] }
-```
+In one measurement, 30 sources polling one command every 2 seconds used 2.2%
+of a core with a fixed period and 0.5% with backoff. The CPU matters less than
+the wakeups: 15 process creations a second leave no idle window longer than
+about 66 ms, so the CPU never reaches its deep sleep states. A status bar should
+not keep a laptop awake.
 
-Match rules are the same strings `busctl` and `dbus-monitor` take. A signal
-reaches the adapter as the JSON `busctl` prints, so one file works whether a
-fact was polled or pushed. A value of type `v` is collapsed the way busctl does
-it, so an adapter never learns something arrived wrapped.
+### A consumer that stops reading
 
-A request goes back out as a call line on stdin, which the adapter's `request`
-returns as a string. Fields are tab-separated, as in kipp:
+Each consumer has a 256 KB queue. kippsrv sends everything queued for a
+consumer in one write and keeps whatever part the kernel did not take for the
+next try, so a consumer that pauses loses nothing. A consumer whose queue fills
+is disconnected. When it connects and subscribes again, it gets the current
+values.
 
-```
-call <destination> <path> <interface> <member> <signature> <argument>...
-```
+In one measurement, a consumer that never read was disconnected after 10,466
+lines. At a busy desktop's rate that is about half a minute.
 
-Arguments cross as text and the signature says what each one is. No reply is
-asked for: the facts that follow show what the call did.
-
-### tray and notify
-
-Owning a well-known name is the one thing `busctl` cannot do. A tray
-application looks for the watcher once at its own startup, so if nobody owns
-it no icon ever registers. `notify-send` calls whoever holds the notification
-name, so holding it is the whole of being a daemon.
-
-Both print kipp themselves (`tray/<item>`, `notif/<id>`), and their source files
-have no `feed` and no `request`, so kipp passes through both ways. The requests
-each takes are listed at the top of `bus/tray.odin` and `bus/notify.odin`.
-
-### sd-bus, not libdbus
-
-libdbus is everywhere and would make exporting an interface manual message
-dispatch. sd-bus has `sd_bus_add_object_vtable`.
-
-kippbus links basu, which is sd-bus without systemd, so it needs no D-Bus
-library at run time and there is one build: what you test is what you ship.
-kippsrv links no bus at all.
-
-basu is pinned in the Makefile, not copied into this repo. 34k lines of someone
-else's C does not belong in the tree, and a pinned commit gives the same
-reproducibility. Building it needs meson, ninja and gperf. All the symbols
-kippbus uses are listed in `bus/sdbus.odin`.
-
-libsystemd's vtable struct is 56 bytes, with parameter names and a format
-reference, and basu's is 48. The layout in `bus/sdbus.odin` is basu's, and a
-mismatch would show only at run time.
-
-## What the adapters absorb
-
-Eight real formats, captured from live programs and kept in `tests/fmt/`. Each
-converts through one Lua file and nothing downstream learns it.
-
-| Shape | Source | Adapter |
-| --- | --- | --- |
-| `event>>data`, commas inside values | Hyprland socket2 | `lua/wm/hypr.lua` |
-| space separated, title last | dwl `printstatus` | `lua/wm/dwl.lua` |
-| length-prefixed binary | i3 and sway | `lua/wm/i3.lua` |
-| colon separated, backslash escapes | `nmcli -t` | `lua/net/nm.lua` |
-| tab separated | `pactl list short` | `lua/audio/pw.lua` |
-| comma separated | `brightnessctl -m` | `lua/backlight/brightnessctl.lua` |
-| indented, one record over many lines | `upower -i` | `lua/power/upower.lua` |
-| JSON | `busctl --json=short` | `lua/media/mpris.lua` |
-
-Two of those forced the API to grow, and the tests found both before the design
-did. A record spanning lines has no terminator on the last one, so `feed` alone
-produced nothing and an adapter now gets told when a batch ends. And Lua has no
-JSON decoder, so writing one per adapter in the wrong language lost to one call
-backed by `core:encoding/json`.
-
-An adapter **can** hold state. The table it returns lives for the life of the
-source, so an upvalue survives between feeds. `upower.lua` needs that.
-
-Binary is not out of reach either. Lua strings are 8-bit clean and
-`string.pack` and `string.unpack` are in the `string` library, so an adapter
-reads a length-prefixed frame itself and Odin never learns the magic string.
-What belongs to the source is framing, not parsing.
-
-## Measured
-
-One line through each layer:
+Throughput is not the risk. One line through each layer:
 
 | Layer | Rate |
 | --- | --- |
@@ -375,49 +163,41 @@ One line through each layer:
 | the Hyprland adapter (Lua) | 325k lines/s |
 
 The Lua call is the ceiling, about three orders of magnitude above what a
-desktop produces. Throughput is not the risk.
+desktop produces.
 
-**The risk is a consumer that stops reading.** A unix socket charges per
-message, not per byte. One `send` of one line costs about 766 bytes of kernel
-buffer, so a 208 KB buffer holds 278 lines carrying 9.7 KB of payload, and a
-consumer that stalled used to be dropped after 278 of them.
+### D-Bus lives in kippbus
 
-Three changes fixed that, all in `srv_flush`. A pass goes out in one send
-rather than one send per line, which fits ten times as many lines in the same
-kernel buffer. Each consumer has a 256 KB queue in front of that. And a write
-that only partly lands keeps its remainder for the next pass, so a momentary
-stall is no longer fatal.
+kippsrv never learns what D-Bus is. `kippbus` is a second binary that holds one
+bus connection, and kippsrv runs it from an ordinary source file like any other
+command: lines out on stdout, requests in on stdin. HOWTO.md shows how to use it.
 
-A consumer that never reads now takes **10,466 lines** to drop. At a busy
-desktop rate that is half a minute of not reading, and a bar stalled that long
-is already dead.
+kippbus uses sd-bus, because sd-bus can export an interface with
+`sd_bus_add_object_vtable`, which the tray and notification daemons need. With
+libdbus that is manual message dispatch. It links basu, which is sd-bus
+without systemd, statically, so kippbus needs no D-Bus library at run time.
+kippsrv links no bus at all.
 
-## When something goes wrong
+`download-deps.sh` clones basu from git.sr.ht at a pinned commit and builds it
+once. `bus/sdbus.odin` lists every symbol kippbus uses.
 
-Every message with a code in brackets is explained in
-[DIAGNOSTICS.md](DIAGNOSTICS.md), and each says who can fix it. A message
-naming an adapter file is a bug in that adapter, not in your configuration, and
-that file is the one to report against.
+### The wire
 
-Anything starting `config:` is yours to correct and names the key it expected.
-
-## The wire
-
-kippsrv implements kipp itself rather than vendoring it. The protocol is the
-contract, so two implementations that drift still interoperate, which an ABI
-does not. Readers written against the C implementation in the [kipp repo](https://github.com/ItsNotPaths/kipp) talk to
-this one with no change.
+kippsrv implements kipp itself rather than vendoring the C library from the
+[kipp repo](https://github.com/ItsNotPaths/kipp). The protocol is the contract:
+a reader written against that library talks to kippsrv with no change.
 
 ## Build
 
 ```sh
-make            # kippsrv and kippbus, building basu the first time
-make check      # lint, unit tests, then a socat round trip
-make lint       # the four architecture checks alone
-make install    # PREFIX=/usr/local by default, DESTDIR for staging
-
-./build.sh --public --version v0.1.0   # run release.yml on GitHub and watch it
+./download-deps.sh --force   # rebuild basu
+./build.sh test              # lint, unit tests, then a socat round trip (needs socat; dbus for the bus checks)
+./build.sh --version v1.2.3  # stamp the build: kippsrv --version prints it
+PREFIX=/usr DESTDIR=pkg ./build.sh install --version v1.2.3   # system-wide, for a package
 ```
 
-A release is a prefix tree: `tar -C /usr/local -xzf kippsrv-*.tar.gz`. Both
-binaries need only glibc, as new as the CI runner's.
+CI builds with the Odin release `dev-2026-10` on GitHub's `ubuntu-latest`. A
+release is a prefix tree: `tar -C /usr/local -xzf kippsrv-*.tar.gz`. Both
+binaries need only glibc, at least as new as that runner's.
+
+Maintainers cut a release with `./build.sh --public --version vX.Y.Z`, which
+starts the release workflow through the `gh` CLI.

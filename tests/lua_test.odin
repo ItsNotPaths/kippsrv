@@ -82,7 +82,7 @@ adapter_turns_a_foreign_line_into_facts :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()
 	defer kippsrv.vm_close(v)
 
-	a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+	a, ok := kippsrv.vm_load(v, "tests/lua/wm-example.lua")
 	if !testing.expect(t, ok, "vm_load") do return
 	defer kippsrv.vm_unload(v, a)
 
@@ -167,7 +167,7 @@ a_field_with_no_equals_is_refused :: proc(t: ^testing.T) {
 a_file_with_no_feed_passes_kipp_through :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()
 	defer kippsrv.vm_close(v)
-	a, ok := kippsrv.vm_load(v, "sources.d/wm-hedl.lua")
+	a, ok := kippsrv.vm_load(v, "sources.d/tray-snw.lua")
 	if !testing.expect(t, ok, "vm_load") do return
 
 	retain := kippsrv.vm_feed(v, a, "retain\twin/7\tws=1\ttitle=a=b")

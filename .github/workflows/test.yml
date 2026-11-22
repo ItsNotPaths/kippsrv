@@ -27,5 +27,8 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           release: dev-2026-10
 
+      - name: Build basu
+        run: ./download-deps.sh
+
       - name: Check
-        run: dbus-run-session -- make check
+        run: dbus-run-session -- ./build.sh test

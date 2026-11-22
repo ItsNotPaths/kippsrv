@@ -49,7 +49,7 @@ bench_layers :: proc(t: ^testing.T) {
 	{
 		v, _ := kippsrv.vm_open()
 		defer kippsrv.vm_close(v)
-		a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+		a, ok := kippsrv.vm_load(v, "tests/lua/wm-example.lua")
 		if !testing.expect(t, ok) do return
 
 		start := time.tick_now()

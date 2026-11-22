@@ -237,6 +237,7 @@ reply_strings :: proc(call: ^Bus_Message, values: []cstring, as_array: bool) -> 
 // ------------------------------------------------------------- requests
 
 @(private = "file")
+// (hole notify-invoke :tags bus) no action=invoke: a bar cannot send ActionInvoked back to the app that sent the notification.
 take_request :: proc(line: string) {
 	payload := payload_of(line)
 	switch payload["action"] {

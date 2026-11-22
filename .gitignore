@@ -1,5 +1,4 @@
-kippsrv
-kippbus
+build/
 
 config.lua.local
-basu/
+vendor/

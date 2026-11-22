@@ -25,6 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # meson, ninja and gperf build basu. socat is check.sh's client, and
+      # dbus gives the bus checks a session bus instead of a skip.
       - name: Install build deps
         run: |
           sudo apt-get update -qq
@@ -37,8 +39,11 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           release: dev-2026-10
 
+      - name: Build basu
+        run: ./download-deps.sh
+
       - name: Check
-        run: dbus-run-session -- make check
+        run: dbus-run-session -- ./build.sh test
 
       # A prefix tree: `tar -C /usr/local -xzf` installs it, and
       # /usr/local/share is on the default XDG_DATA_DIRS.
@@ -47,7 +52,7 @@ jobs:
       # system at least as new. Nothing else: Lua and basu are linked in.
       - name: Package
         run: |
-          make install DESTDIR="$PWD/stage" PREFIX=
+          DESTDIR="$PWD/stage" PREFIX= ./build.sh install --version "${{ inputs.version }}"
           tar -C stage -czf "kippsrv-${{ inputs.version }}-linux-x86_64.tar.gz" bin share
 
       - name: Create release

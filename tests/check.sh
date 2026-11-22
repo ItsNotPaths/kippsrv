@@ -12,15 +12,15 @@ cleanup() { kill $SERVERS 2>/dev/null; rm -rf "/tmp/kippsrv-check.$$"; }
 trap cleanup EXIT
 
 # A kippsrv with XDG folders under $1, so nothing of the session is read. The
-# kippbus built here is the one its sources run.
+# kippbus built in build/ is the one its sources run.
 # Source files go in $1/data/kippsrv/sources.d, the system folder, or
 # $1/config/kippsrv/sources.d, the user's.
 folders() {
 	mkdir -p "$1/run" "$1/config/kippsrv/sources.d" "$1/data/kippsrv/sources.d"
 }
 start() {
-	PATH="$PWD:$PATH" XDG_RUNTIME_DIR="$1/run" XDG_CONFIG_HOME="$1/config" \
-		XDG_DATA_DIRS="$1/data" ./kippsrv 2>"$1/err" &
+	PATH="$PWD/build:$PATH" XDG_RUNTIME_DIR="$1/run" XDG_CONFIG_HOME="$1/config" XDG_DATA_HOME="$1/home" \
+		XDG_DATA_DIRS="$1/data" build/kippsrv 2>"$1/err" &
 	SERVERS="$SERVERS $!"
 	sleep 0.4
 }
@@ -208,6 +208,23 @@ EOF2
          retains = \"tray/*\", takes = \"tray/request\" }" > "$SOURCES/tray-snw.lua"
 	adapter notify-fdo.lua "source { name = \"notify\", exec = \"kippbus notify $NOTIFY\",
          retains = \"notif/*\", takes = \"notif/request\" }" > "$SOURCES/notify-fdo.lua"
+
+	# A name already on the bus at start is called with --each, and one that
+	# leaves takes its fact with it.
+	NAMES=org.kippsrv.CheckNames.p$$
+	sleep 10 | build/kippbus notify "$NAMES.one" &
+	NAMED=$!
+	cat > "$SOURCES/names.lua" <<EOF2
+source { name = "names", retains = "named/*",
+         exec = [[kippbus match --names $NAMES --each "$NPATH $NIFACE GetServerInformation"]] }
+function feed(line)
+	local message = k.json(line)
+	if not message then return end
+	if message.type == "left" then k.retain("named/one") end
+	if message.type == "method_return" then k.retain("named/one", "server=" .. message.body[1].data) end
+end
+EOF2
+	sleep 0.3
 	start "$B"
 	SOCK=$B/run/kippsrv.sock
 	STATE=$B/run/kippsrv.state
@@ -220,6 +237,21 @@ EOF2
 		echo "ok    a signal reaches the adapter as busctl's JSON"
 	else
 		echo "FAIL  the signal did not reach the adapter"
+		FAILS=$((FAILS + 1))
+	fi
+
+	if grep -q '^retain	named/one	server=kippbus' "$STATE"; then
+		echo "ok    a name on the bus at start is called with --each"
+	else
+		echo "FAIL  the --each reply did not reach the adapter"
+		FAILS=$((FAILS + 1))
+	fi
+	kill $NAMED
+	sleep 0.4
+	if ! grep -q '^retain	named/' "$STATE"; then
+		echo "ok    a name that leaves drops its fact"
+	else
+		echo "FAIL  the name left and its fact stayed"
 		FAILS=$((FAILS + 1))
 	fi
 

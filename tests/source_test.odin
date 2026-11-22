@@ -35,7 +35,7 @@ exec_source_splits_lines :: proc(t: ^testing.T) {
 	ss := kippsrv.Sources{vm = v}
 	defer kippsrv.src_close(&ss)
 
-	a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+	a, ok := kippsrv.vm_load(v, "tests/lua/wm-example.lua")
 	if !testing.expect(t, ok) do return
 
 	_, spawned := kippsrv.src_exec(&ss, "printf", `printf 'focus eDP-1 3\n\n\nfocus HDMI-A-1 9\n'`, a)
@@ -55,7 +55,7 @@ a_line_sent_reaches_the_child :: proc(t: ^testing.T) {
 	ss := kippsrv.Sources{vm = v}
 	defer kippsrv.src_close(&ss)
 
-	a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+	a, ok := kippsrv.vm_load(v, "tests/lua/wm-example.lua")
 	if !testing.expect(t, ok) do return
 	s, spawned := kippsrv.src_exec(&ss, "cat", "cat", a)
 	if !testing.expect(t, spawned) do return
@@ -74,7 +74,7 @@ a_command_that_cannot_run_goes_offline :: proc(t: ^testing.T) {
 	ss := kippsrv.Sources{vm = v}
 	defer kippsrv.src_close(&ss)
 
-	a, ok := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+	a, ok := kippsrv.vm_load(v, "tests/lua/wm-example.lua")
 	if !testing.expect(t, ok) do return
 	missing, _ := kippsrv.src_exec(&ss, "missing", "kippsrv-no-such-command", a)
 	ran, _ := kippsrv.src_exec(&ss, "ran", "true", a)
@@ -145,7 +145,7 @@ an_idle_source_backs_off :: proc(t: ^testing.T) {
 	ss := kippsrv.Sources{vm = v}
 	defer kippsrv.src_close(&ss)
 
-	a, _ := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+	a, _ := kippsrv.vm_load(v, "tests/lua/wm-example.lua")
 	s, ok := kippsrv.src_exec(&ss, "p", "true", a, 2000)
 	if !testing.expect(t, ok) do return
 
@@ -184,7 +184,7 @@ a_throttled_source_holds_the_newest_unit :: proc(t: ^testing.T) {
 	ss := kippsrv.Sources{vm = v}
 	defer kippsrv.src_close(&ss)
 
-	a, _ := kippsrv.vm_load(v, "sources.d/wm-example.lua")
+	a, _ := kippsrv.vm_load(v, "tests/lua/wm-example.lua")
 	s, ok := kippsrv.src_exec(&ss, "p", "true", a, 0)
 	if !testing.expect(t, ok) do return
 	s.thr.min_gap = 10_000

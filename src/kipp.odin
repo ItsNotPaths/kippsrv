@@ -276,7 +276,6 @@ queue :: proc(c: ^Conn, line: string) -> bool {
 }
 
 // A live owner answers a connect. A stale socket does not.
-@(private = "file")
 in_use :: proc(path: string) -> bool {
 	addr := sock_addr(path) or_return
 	fd := posix.socket(.UNIX, .STREAM)

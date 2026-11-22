@@ -146,6 +146,35 @@ a_multi_line_record_needs_flush :: proc(t: ^testing.T) {
 	testing.expect_value(t, m.payload["state"], "fully-charged")
 }
 
+// upower --dump lists every device. DisplayDevice, upower's sum of the
+// batteries, has no native-path, so its fields must not land on the device
+// listed before it.
+@(test)
+upower_dump_keeps_devices_apart :: proc(t: ^testing.T) {
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+	a, _ := kippsrv.vm_load(v, "sources.d/power-upower.lua")
+	defer kippsrv.vm_unload(v, a)
+	src, _ := os.read_entire_file("tests/fmt/upower-dump.txt", context.temp_allocator)
+	text := string(src)
+
+	devices := make(map[string]kippsrv.Msg, allocator = context.temp_allocator)
+	keep :: proc(devices: ^map[string]kippsrv.Msg, emits: []kippsrv.Emit) {
+		for emit in emits {
+			message, good := kippsrv.parse(strings.clone(emit.line, context.temp_allocator), context.temp_allocator)
+			if good do devices[message.topic] = message
+		}
+	}
+	for line in strings.split_lines_iterator(&text) do keep(&devices, kippsrv.vm_feed(v, a, line))
+	keep(&devices, kippsrv.vm_flush(v, a))
+
+	testing.expect_value(t, len(devices), 4)
+	testing.expect_value(t, devices["power/BAT0"].payload["kind"], "battery")
+	last_line_power := devices["power/ucsi-source-psy-USBC000:002"]
+	testing.expect_value(t, last_line_power.payload["kind"], "line-power")
+	testing.expect(t, "percentage" not_in last_line_power.payload, "DisplayDevice leaked into the device before it")
+}
+
 // JSON. Lua has no decoder, so k.json is the fourth call in the API. The
 // adapter collects the blob in feed and decodes it in flush.
 @(test)

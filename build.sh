@@ -1,39 +1,72 @@
 #!/bin/sh
-# Build through make, or start the release workflow.
+# Build kippsrv and kippbus, test them, install them, or start the release
+# workflow. Run download-deps.sh one time before this script.
 set -eu
 
 cd "$(dirname "$0")"
+out=build
+basu=vendor/basu/build
 
 usage() {
 	cat <<EOF
-usage: $(basename "$0") [make target...] | --public --version vX.Y.Z [--notes "text"] [--prerelease]
+usage: $(basename "$0") [test | install] [--version vX.Y.Z]
+       $(basename "$0") --public --version vX.Y.Z [--notes "text"] [--prerelease]
 
-  (no flag)             make, with any targets given: check, install, clean
-  --public              trigger release.yml through the gh CLI
-  --version <tag>       required with --public
+  (no flag)             kippsrv and kippbus into build/, which git ignores
+  test                  build, then lint, unit tests and the round trip checks
+  install               build, then install under \$PREFIX (/usr/local), staged in \$DESTDIR.
+                        For a package; a person runs build/kippsrv --install
+  --version <tag>       stamp the build, so kippsrv --version prints it
+  --public              trigger release.yml through the gh CLI, which builds the tag
   --notes <text>        release notes
   --prerelease          mark the release as a pre-release
 EOF
 }
 
-case "${1:-}" in
-	--public) ;;
-	-h|--help) usage; exit 0 ;;
-	*) exec make "$@" ;;
-esac
-
+mode=build
+public=0
 version=""
 notes=""
 prerelease=false
-shift
 while [ $# -gt 0 ]; do
 	case "$1" in
+		test|install) mode="$1"; shift ;;
+		--public)     public=1; shift ;;
 		--version)    version="${2:-}"; shift 2 ;;
 		--notes)      notes="${2:-}"; shift 2 ;;
 		--prerelease) prerelease=true; shift ;;
+		-h|--help)    usage; exit 0 ;;
 		*) echo "unknown flag: $1" >&2; usage; exit 1 ;;
 	esac
 done
+
+# kippbus links basu statically: vendor/basu/build holds libbasu.a and nothing
+# else to link against.
+build() {
+	if [ ! -f "$basu/libbasu.a" ]; then
+		echo "error: basu is not built. Run ./download-deps.sh first" >&2
+		exit 1
+	fi
+	mkdir -p "$out"
+	odin build src -out:"$out/kippsrv" ${version:+-define:VERSION="$version"}
+	odin build bus -out:"$out/kippbus" -extra-linker-flags:"-L$PWD/$basu"
+}
+
+if [ "$public" = 0 ]; then
+	build
+	case "$mode" in
+		test)
+			tests/lint.sh
+			odin test tests
+			tests/check.sh ;;
+		install)
+			# PREFIX= (empty) is valid: a release stages a bare prefix tree.
+			target="${DESTDIR:-}${PREFIX-/usr/local}"
+			install -Dm755 -t "$target/bin" "$out/kippsrv" "$out/kippbus"
+			install -Dm644 -t "$target/share/kippsrv/sources.d" sources.d/*.lua ;;
+	esac
+	exit 0
+fi
 
 # It builds nothing here. The workflow builds from the commit GitHub has, so
 # a release never carries a local change that was never pushed.
