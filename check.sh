@@ -30,8 +30,12 @@ adapter() {
 	printf '%s\n' "$2"
 }
 
+# Lines that do not name a client are sent as client "check".
 ask() {
-	printf '%s' "$1" | timeout 2 socat -t1 - UNIX-CONNECT:"$SOCK" 2>/dev/null
+	case "$1" in
+	connect*|'') printf '%s' "$1" ;;
+	*)           printf 'connect\tcheck\n%s' "$1" ;;
+	esac | timeout 2 socat -t1 - UNIX-CONNECT:"$SOCK" 2>/dev/null
 }
 
 want() {
@@ -84,6 +88,20 @@ echo 'source { name = "owner", exec = "true" }' > "$SYSTEM/c-twin.lua"
 echo 'source { name = "system-copy", exec = "true" }' > "$SYSTEM/d-same.lua"
 echo 'source { name = "user-copy", exec = "true" }' > "$USER/d-same.lua"
 
+# A request reaches the source that takes it, and its answer comes back as
+# the source's own output.
+cat > "$SYSTEM/f-echo.lua" <<'EOF2'
+source { name = "echo", exec = "cat", takes = "echo/request", retains = "echo/*" }
+function request(m)
+	if not m.payload.word then return nil, "badarg", "word= is missing" end
+	return "echo " .. m.payload.word .. "\n"
+end
+function feed(line)
+	local word = line:match("^echo (%S+)$")
+	if word then k.emit("echo", word, "seen=1") end
+end
+EOF2
+
 # A retain outside the source's claim is dropped.
 cat > "$SYSTEM/e-stray.lua" <<'EOF2'
 source { name = "stray", exec = "echo go", retains = {"y/*"} }
@@ -104,9 +122,30 @@ subscribe	layout/*
 '
 want_none only_match '^retain	tag/'           'subscribe	layout/*
 '
-want status     'retain	status/wm	state=online' 'subscribe	status/*
+want status     'retain	status/wm	state=online	retains=tag/\*,focus/\*' 'subscribe	status/*
 '
-want no_forgery 'error	noconnect'             'retain	tag/0/9	state=focused
+if printf 'subscribe\t*\n' | timeout 2 socat -t1 - UNIX-CONNECT:"$SOCK" 2>/dev/null |
+   grep -q 'error	noconnect'; then
+	echo "ok    noconnect"
+else
+	echo "FAIL  noconnect (a line before connect was not refused)"
+	FAILS=$((FAILS + 1))
+fi
+want no_forgery 'error	badtopic	topic=tag/0/9	msg=outside its claim' 'retain	tag/0/9	state=focused
+'
+want claimed    '^retain	x/1	v=1'          'connect	owner
+subscribe	x/*
+retain	x/1	v=1
+'
+ask 'connect	owner
+will	retain	x/state	state=offline
+' >/dev/null
+want will       '^retain	x/state	state=offline' 'subscribe	x/*
+'
+want request    '^retain	echo/hi	seen=1'   'subscribe	echo/*
+publish	echo/request	word=hi
+'
+want request_refused 'error	badarg	topic=echo/request	msg=word= is missing' 'publish	echo/request
 '
 want no_verb    'error	badverb	verb=TAG'      'TAG	9
 '
@@ -132,9 +171,6 @@ said outside_claim   'source "stray" retained "z/1", outside its claim'
 want_none stray_dropped '^retain	z/'        'subscribe	*
 '
 
-# (hole requests) the v1 command seam is gone; v2 requests bring its check back.
-echo "skip  commands (v2 requests are not built)"
-
 # D-Bus needs a live session bus and busctl. Missing either is a skip.
 if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
 	D=$TOP/dbus
@@ -144,7 +180,7 @@ if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
 	  cat test/lua/dbus_echo.lua; } > "$D/data/kippsrv/sources.d/test.lua"
 	start "$D"
 	DSOCK=$D/run/kippsrv.sock
-	{ printf 'subscribe\t*\n'; sleep 3; } | timeout 3 socat - UNIX-CONNECT:"$DSOCK" \
+	{ printf 'connect\tcheck\nsubscribe\t*\n'; sleep 3; } | timeout 3 socat - UNIX-CONNECT:"$DSOCK" \
 		> /tmp/kippsrv-dbus.$$.out 2>/dev/null &
 	sleep 0.4
 	busctl --user emit /x org.kippsrv.Test Sig "sa{sv}" hello 2 k1 s v1 k2 i 42 >/dev/null 2>&1

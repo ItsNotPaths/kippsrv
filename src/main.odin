@@ -17,6 +17,11 @@ dump :: proc(s: ^Server, fd: posix.FD, pattern: string) {
 	for line in lines do if matches(pattern, topic_of(line)) do send_to(s, fd, line)
 }
 
+// A client's retain, already inside its claim.
+retain :: proc(s: ^Server, line: string) {
+	if moved := store_apply(&store, Emit{line, 0}); moved != "" do broadcast(s, moved)
+}
+
 @(private = "file")
 the_loop: ^Loop
 
@@ -52,7 +57,9 @@ main :: proc() {
 	}
 	defer stop(srv)
 	srv.on_dump = dump
-	srv.on_cmd = command
+	srv.on_retain = retain
+	srv.on_publish = request
+	for spec in cfg.sources do srv.claims[spec.name] = spec.retains
 
 	ss := Sources{vm = v}
 	defer src_close(&ss)

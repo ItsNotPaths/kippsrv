@@ -321,3 +321,58 @@ switching_tags_clears_the_last_one :: proc(t: ^testing.T) {
 	for line in lines do fmt.printfln("    %s", line)
 	testing.expect_value(t, focused, 1)
 }
+
+// A second client with the same name closes the first, as in MQTT, and the
+// first one's will fires.
+@(test)
+a_second_connect_closes_the_first :: proc(t: ^testing.T) {
+	path := "/tmp/kippsrv-twice.sock"
+	s, ok := serve(path, "version\t2\tbroker=test")
+	if !testing.expect(t, ok) do return
+	defer stop(s)
+
+	dial :: proc(path: string) -> posix.FD {
+		addr: posix.sockaddr_un
+		addr.sun_family = .UNIX
+		copy(addr.sun_path[:], transmute([]c.char)path)
+		fd := posix.socket(.UNIX, .STREAM)
+		posix.connect(fd, (^posix.sockaddr)(&addr), size_of(addr))
+		return fd
+	}
+	say :: proc(fd: posix.FD, text: string) {
+		posix.send(fd, raw_data(text), c.size_t(len(text)), {})
+	}
+
+	first := dial(path)
+	defer posix.close(first)
+	srv_ready(s, s.fd)
+	first_end := s.conns[0].fd
+	second := dial(path)
+	defer posix.close(second)
+	srv_ready(s, s.fd)
+	second_end := s.conns[1].fd
+
+	say(first, "connect\tbar\nwill\tpublish\tbye/bar\n")
+	srv_ready(s, first_end)
+	say(second, "connect\tbar\nsubscribe\tbye/*\n")
+	srv_ready(s, second_end)
+	srv_wills(s)
+	srv_flush(s)
+
+	buf: [512]byte
+	got := ""
+	for {     // the greeting, then the end
+		pfd := posix.pollfd{fd = first, events = {.IN}}
+		if posix.poll(&pfd, 1, 500) <= 0 do break
+		n := posix.recv(first, raw_data(buf[:]), len(buf), {})
+		if n <= 0 {
+			got = "closed"
+			break
+		}
+	}
+	testing.expect_value(t, got, "closed")
+
+	n := posix.recv(second, raw_data(buf[:]), len(buf), {})
+	heard := string(buf[:max(0, int(n))])
+	testing.expect(t, strings.contains(heard, "publish\tbye/bar"), "the first one's will fires")
+}

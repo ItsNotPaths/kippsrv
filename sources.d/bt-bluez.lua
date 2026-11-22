@@ -10,7 +10,7 @@
 -- that names it, which has to be the one holding a bus. The seed reads what is
 -- paired now; the stream carries every connect, battery and scan result after.
 local claim = {"bt/*", "bt_radio/*"}
-source { name = "bt", system = true, retains = claim,
+source { name = "bt", system = true, retains = claim, takes = "bt/request",
          dbus = {"type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager'",
                  "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties'"} }
 source { name = "bt-seed", retains = claim,
@@ -117,9 +117,9 @@ local function gone(path, iface)
 end
 
 local on_device = {
-	CONNECT    = "Connect",
-	DISCONNECT = "Disconnect",
-	PAIR       = "Pair",
+	connect    = "Connect",
+	disconnect = "Disconnect",
+	pair       = "Pair",
 }
 
 local function radio_path(id)
@@ -157,21 +157,24 @@ function feed(line)
 	end
 end
 
--- The subject is the address, as it is on the wire. bluez holds the paths.
-function command(m)
-	local subj = (m.subj[1] or ""):upper()
+-- publish bt/request action=connect|disconnect|pair|forget addr=<address>
+-- publish bt/request action=scan state=on|off [radio=<id>]
+-- The address is as it is on the wire. bluez holds the paths.
+function request(m)
+	local action = m.payload.action or ""
+	local addr = (m.payload.addr or ""):upper()
 
-	local member = on_device[m.kind]
+	local member = on_device[action]
 	if member then
-		local path = by_addr[subj]
+		local path = by_addr[addr]
 		if not path then
 			return nil, "badarg", "no device with that address"
 		end
 		return {dest = BLUEZ, path = path, iface = DEVICE, member = member}
 	end
 
-	if m.kind == "FORGET" then
-		local path = by_addr[subj]
+	if action == "forget" then
+		local path = by_addr[addr]
 		if not path then
 			return nil, "badarg", "no device with that address"
 		end
@@ -180,16 +183,18 @@ function command(m)
 		        sig = "o", args = {path}}
 	end
 
-	if m.kind == "SCAN" then
-		local on = subj == "ON"
-		if not on and subj ~= "OFF" then
-			return nil, "badarg", "SCAN takes on or off"
+	if action == "scan" then
+		local on = m.payload.state == "on"
+		if not on and m.payload.state ~= "off" then
+			return nil, "badarg", "scan takes state=on or off"
 		end
-		local path = radio_path(m.attr.radio)
+		local path = radio_path(m.payload.radio)
 		if not path then
 			return nil, "badarg", "no such radio"
 		end
 		return {dest = BLUEZ, path = path, iface = RADIO,
 		        member = on and "StartDiscovery" or "StopDiscovery"}
 	end
+
+	return nil, "badarg", "unknown action"
 end

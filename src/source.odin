@@ -47,6 +47,7 @@ Source :: struct {
 	dead:    bool,       // gone, until a restart works
 	said:    Status,     // what status/<name> last said
 	retains: []string,   // its claim, borrowed from the config
+	takes:   []string,   // the requests it takes, borrowed from the config
 	refused: bool,       // a retain outside the claim was reported
 	bus:     ^Bus,       // dbus only
 }
@@ -548,7 +549,7 @@ src_may_retain :: proc(ss: ^Sources, e: Emit) -> bool {
 	for s in ss.list {
 		if s.id != e.src do continue
 		topic := topic_of(e.line)
-		for pattern in s.retains do if matches(pattern, topic) do return true
+		if any_match(s.retains, topic) do return true
 		if !s.refused {
 			s.refused = true
 			fmt.eprintfln(
@@ -571,8 +572,12 @@ src_status :: proc(ss: ^Sources) -> []Emit {
 		topic := fmt.tprintf("status/%s", s.name)
 		if !is_topic(topic) do continue
 		s.said = now
-		// (hole status-claim :tags broker) names no claim; v2 adds retains=<pattern>, so a reader matches its own topics against it.
-		append(&out, Emit{fmt.tprintf("retain\t%s\tstate=%s", topic, STATUS_WORD[now]), 0})
+		// The claim goes along, so a reader matches its own topics against it.
+		line := fmt.tprintf("retain\t%s\tstate=%s", topic, STATUS_WORD[now])
+		if len(s.retains) > 0 {
+			line = fmt.tprintf("%s\tretains=%s", line, strings.join(s.retains, ",", context.temp_allocator))
+		}
+		append(&out, Emit{line, 0})
 	}
 	return out[:]
 }

@@ -52,6 +52,11 @@ matches :: proc(pattern, topic: string) -> bool {
 	return posix.fnmatch(cstr(pattern), cstr(topic), {}) == 0
 }
 
+any_match :: proc(patterns: []string, topic: string) -> bool {
+	for pattern in patterns do if matches(pattern, topic) do return true
+	return false
+}
+
 is_pattern :: proc(pattern: string) -> bool {
 	for ch in transmute([]byte)pattern do if ch < 0x20 || ch == 0x7f do return false
 	return len(pattern) > 0
@@ -202,6 +207,9 @@ Conn :: struct {
 	out: [dynamic]byte,   // this pass's lines, written in one send
 	eof: bool,            // it will send no more lines. It still reads
 	patterns: [dynamic]string,   // what it subscribed to
+	name:  string,        // from connect, or "" before it
+	claim: []string,      // what it may retain, borrowed from the config
+	will:  string,        // a retain or publish line, acted on when it ends
 }
 
 // A unix socket accounts per message, not per byte: one send costs about 766
@@ -213,8 +221,11 @@ Server :: struct {
 	path:    string,
 	greet:   string,
 	conns:   [dynamic]Conn,
+	claims:  map[string][]string,   // source name to its claim, borrowed
+	wills:   [dynamic]string,       // of connections that ended, not yet acted on
 	on_dump: proc(s: ^Server, fd: posix.FD, pattern: string),
-	on_cmd:  proc(s: ^Server, m: ^Msg, fd: posix.FD),
+	on_retain:  proc(s: ^Server, line: string),
+	on_publish: proc(s: ^Server, m: ^Msg, fd: posix.FD),
 }
 
 @(private = "file")
@@ -296,9 +307,12 @@ serve :: proc(path, greet: string) -> (s: ^Server, ok: bool) {
 stop :: proc(s: ^Server) {
 	if s == nil do return
 	for &c in s.conns do close_conn(&c)
+	for line in s.wills do delete(line)
 	posix.close(s.fd)
 	posix.unlink(strings.clone_to_cstring(s.path, context.temp_allocator))
 	delete(s.conns)
+	delete(s.wills)
+	delete(s.claims)
 	delete(s.path)
 	delete(s.greet)
 	free(s)
@@ -311,20 +325,35 @@ srv_fds :: proc(s: ^Server, dst: []posix.pollfd) -> int {
 	dst[0] = {fd = s.fd, events = {.IN}}
 	n := 1
 	for q in s.conns {
-		// A half-closed consumer is permanently readable, so polling it
-		// would spin. It is reaped when a write to it fails.
-		if q.eof || n == len(dst) do continue
-		dst[n] = {fd = q.fd, events = {.IN}}
+		if n == len(dst) do continue
+		// A half-closed consumer is permanently readable, so polling it for
+		// input would spin. Polled for nothing, it wakes only on hangup.
+		dst[n] = {fd = q.fd, events = {} if q.eof else {.IN}}
 		n += 1
 	}
 	return n
 }
 
+// Its will waits for srv_wills: acting on it here could drop the connection a
+// caller is part way through.
 @(private = "file")
-// (hole will :tags broker :needs connect) a dropped connection leaves nothing behind; v2 publishes the client's will.
 drop :: proc(s: ^Server, i: int) {
-	close_conn(&s.conns[i])
+	c := &s.conns[i]
+	if c.will != "" do append(&s.wills, c.will)
+	c.will = ""
+	close_conn(c)
 	unordered_remove(&s.conns, i)
+}
+
+// The wills of connections that ended, each acted on as if its client had
+// sent the line. Acting can end more connections, whose wills follow.
+srv_wills :: proc(s: ^Server) {
+	for len(s.wills) > 0 {
+		line := pop(&s.wills)
+		m, _ := parse(line, context.temp_allocator)
+		act(s, line, &m, -1)
+		delete(line)
+	}
 }
 
 @(private = "file")
@@ -333,6 +362,8 @@ close_conn :: proc(c: ^Conn) {
 	delete(c.out)
 	for p in c.patterns do delete(p)
 	delete(c.patterns)
+	delete(c.name)
+	delete(c.will)
 }
 
 send_to :: proc(s: ^Server, fd: posix.FD, line: string) {
@@ -358,8 +389,7 @@ broadcast :: proc(s: ^Server, line: string) {
 
 @(private = "file")
 subscribed :: proc(c: ^Conn, topic: string) -> bool {
-	for p in c.patterns do if matches(p, topic) do return true
-	return false
+	return any_match(c.patterns[:], topic)
 }
 
 // The retained lines the pattern matches, then sync. A pattern already held
@@ -446,17 +476,82 @@ accept_one :: proc(s: ^Server) {
 	append(&s.conns, Conn{fd = fd})
 }
 
+@(private = "file")
+find :: proc(s: ^Server, fd: posix.FD) -> int {
+	for c, i in s.conns do if c.fd == fd do return i
+	return -1
+}
+
+// The name, once. A second client with the same name closes the first, as in
+// MQTT, and its will fires.
+@(private = "file")
+connect :: proc(s: ^Server, fd: posix.FD, name: string) {
+	if s.conns[find(s, fd)].name != "" {
+		send_error(s, fd, "badarg", fmt.tprintf("name=%s", name), "already connected")
+		return
+	}
+	if !is_word(name) {
+		send_error(s, fd, "badarg", fmt.tprintf("name=%s", name), "a name is a word")
+		return
+	}
+	for c, j in s.conns {
+		if c.name != name do continue
+		drop(s, j)
+		break
+	}
+	c := &s.conns[find(s, fd)]   // the drop can move it
+	c.name = strings.clone(name)
+	c.claim = s.claims[name]
+}
+
+// A retain or publish line the rules refuse gets its error here. A retain
+// must fall inside the claim of the client's name, so nothing that connects
+// can forge state for everything else that reads.
+@(private = "file")
+refused :: proc(s: ^Server, fd: posix.FD, c: ^Conn, m: ^Msg) -> bool {
+	about := fmt.tprintf("topic=%s", m.topic)
+	switch {
+	case !is_topic(m.topic):
+		send_error(s, fd, "badtopic", about, "not a topic")
+	case m.verb == "retain" && !any_match(c.claim, m.topic):
+		send_error(s, fd, "badtopic", about, "outside its claim")
+	case:
+		return false
+	}
+	return true
+}
+
+// A retain goes to the store, a publish to its subscribers and its takers.
+@(private = "file")
+act :: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD) {
+	if m.verb == "retain" {
+		if s.on_retain != nil do s.on_retain(s, line)
+		return
+	}
+	broadcast(s, line)
+	if s.on_publish != nil do s.on_publish(s, m, fd)
+}
+
+// Checked now, so the error reaches a client that can still read it.
+@(private = "file")
+will :: proc(s: ^Server, fd: posix.FD, c: ^Conn, line: string) {
+	rest := strings.trim_prefix(line, "will\t")
+	m, _ := parse(rest, context.temp_allocator)
+	if m.verb != "retain" && m.verb != "publish" {
+		send_error(s, fd, "badarg", fmt.tprintf("verb=%s", m.verb), "a will is a retain or publish")
+		return
+	}
+	if refused(s, fd, c, &m) do return
+	delete(c.will)
+	c.will = strings.clone(rest)
+}
+
 // By fd, not by index, for the same reason srv_ready is. Sending an error can
 // drop this very connection, and the next turn of the loop would then index a
 // different one or run off the end.
 @(private = "file")
 read_conn :: proc(s: ^Server, fd: posix.FD) {
 	line: [MAX_LINE]byte
-
-	find :: proc(s: ^Server, fd: posix.FD) -> int {
-		for c, i in s.conns do if c.fd == fd do return i
-		return -1
-	}
 
 	for {
 		i := find(s, fd)
@@ -480,23 +575,19 @@ read_conn :: proc(s: ^Server, fd: posix.FD) {
 			case .Data: continue
 			}
 		case .Line:
-			m, _ := parse(string(line[:n]), context.temp_allocator)
+			text := string(line[:n])
+			m, _ := parse(text, context.temp_allocator)
+			if s.conns[i].name == "" && m.verb != "connect" {
+				send_error(s, fd, "noconnect", "", "send connect first")
+				continue
+			}
 			switch m.verb {
+			case "connect":     connect(s, fd, m.topic)
 			case "subscribe":   subscribe(s, fd, &s.conns[i], m.topic)
 			case "unsubscribe": unsubscribe(&s.conns[i], m.topic)
-			case "publish":
-				if !is_topic(m.topic) {
-					send_error(s, fd, "badtopic", fmt.tprintf("topic=%s", m.topic),
-					           "not a topic")
-					continue
-				}
-				broadcast(s, string(line[:n]))
-				if s.on_cmd != nil do s.on_cmd(s, &m, fd)
-			case "retain":
-				// Only a claim's owner retains, so nothing that connects can
-				// forge state for everything else that reads.
-				// (hole connect :tags broker) a client may only publish; v2 takes connect <name>, retain within that claim, publish from anyone.
-				send_error(s, fd, "noconnect", "", "retain needs connect")
+			case "will":        will(s, fd, &s.conns[i], text)
+			case "retain", "publish":
+				if !refused(s, fd, &s.conns[i], &m) do act(s, text, &m, fd)
 			case:
 				send_error(s, fd, "badverb", fmt.tprintf("verb=%s", m.verb),
 				           "unknown verb")
@@ -512,10 +603,10 @@ srv_ready :: proc(s: ^Server, fd: posix.FD) {
 		accept_one(s)
 		return
 	}
-	for c in s.conns {
-		if c.fd == fd {
-			read_conn(s, fd)
-			return
-		}
+	i := find(s, fd)
+	switch {
+	case i < 0:
+	case s.conns[i].eof: drop(s, i)   // polled for nothing, so this is the hangup
+	case:                read_conn(s, fd)
 	}
 }

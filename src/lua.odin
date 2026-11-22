@@ -497,24 +497,22 @@ read_call :: proc(L: ^lua.State, at: c.int) -> Cmd_Call {
 	return out
 }
 
-// Offer one command to one adapter. It answers with bytes for its own source,
-// a call on its own bus, a refusal, or nothing, which means the command was
-// not its.
+// One request to one adapter. It answers with bytes for its own source, a call
+// on its own bus, a refusal, or nothing.
 //
 // The fence holds. The script names a call and never makes one, and the
 // descriptor the answer travels down is never in its reach.
 //
 // The source's name goes along, because one adapter file can serve several
-// sources and a command may be meant for only one of them.
-// (hole requests) goes with command.odin.
-vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
+// sources.
+vm_request :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
 	if a == NO_ADAPTER do return nil
 	clear(&v.emitted)
 
 	lua.rawgeti(v.L, lua.REGISTRYINDEX, lua.Integer(a))
-	if lua.getfield(v.L, -1, "command") != c.int(lua.TFUNCTION) {
+	if lua.getfield(v.L, -1, "request") != c.int(lua.TFUNCTION) {
 		lua.pop(v.L, 2)
-		return nil          // an adapter need not take commands
+		return nil          // an adapter need not take requests
 	}
 	push_msg(v.L, m)
 	lua.pushstring(v.L, cstr(source))
@@ -522,18 +520,18 @@ vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
 	v.budget = SLICES
 	v.running = a
 	if lua.Status(lua.pcall(v.L, 2, 3, 0)) != .OK {
-		fail(v, "command")
+		fail(v, "request")
 		lua.pop(v.L, 1)
 		return nil
 	}
 	defer lua.pop(v.L, 4)   // three results and the adapter table
 
-	// A command produces no facts. The state that follows the action shows
+	// A request produces no facts. The state that follows the action shows
 	// what it did, which is the rule in kipp's SPEC.md, and an adapter that
 	// emits here would be guessing at it.
 	if len(v.emitted) > 0 {
 		fmt.eprintfln(
-`kippsrv: %s emitted %d facts while taking the %q command, and they were
+`kippsrv: %s emitted %d facts while taking a %q request, and they were
          dropped. This is a bug in that adapter file.
          [E-cmdemit] See DIAGNOSTICS.md.`, v.paths[a], len(v.emitted), m.topic)
 		clear(&v.emitted)
@@ -547,8 +545,7 @@ vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
 		return read_call(v.L, top - 2)
 	}
 
-	// Nothing, and a reason: the verb was this adapter's and something about
-	// the command was not right.
+	// Nothing, and a reason: the request was wrong.
 	if lua.type(v.L, top - 1) == .STRING {
 		return Cmd_Fail{str_at(v.L, top - 1), str_at(v.L, top)}
 	}

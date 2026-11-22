@@ -9,17 +9,17 @@
 --                urgency=normal  read=0  icon=/path.png
 --                action=open  exec=satty -f /home/x/Pictures/a.png
 --
--- The two verbs go back out the way the tray's do: a method call on the bus
+-- The two actions go back out the way the tray's do: a method call on the bus
 -- kippsrv already holds. Closing is the spec's own; being read is ours, on our
 -- own interface, because a spec notification is a toast nobody chose to see.
 --
 -- The call names org.freedesktop.Notifications, which is kippsrv itself: the
 -- bus routes by destination, so it arrives back at the vtable that owns the
 -- state. A source started under `bus_name` to test beside a live daemon is the
--- one case where that lands on the other one, so test those two verbs by
+-- one case where that lands on the other one, so test those two actions by
 -- calling the members directly.
 -- Off: it owns org.freedesktop.Notifications, which another daemon may hold.
---source { name = "notify", notify = true, retains = {"notif/*"} }
+--source { name = "notify", notify = true, retains = {"notif/*"}, takes = "notif/request" }
 
 local FDO  = "org.freedesktop.Notifications"
 local PATH = "/org/freedesktop/Notifications"
@@ -51,20 +51,21 @@ function feed(line)
 	end
 end
 
-function command(m)
-	if m.kind == "NOTIFY-CLOSE" then
-		local id = tonumber(m.subj[1] or "")
+-- publish notif/request action=close id=<id>, or action=read for all.
+function request(m)
+	if m.payload.action == "close" then
+		local id = tonumber(m.payload.id or "")
 		if not id then
-			return nil, "badarg", "NOTIFY-CLOSE takes a notification id"
+			return nil, "badarg", "close takes id="
 		end
 		return {dest = FDO, path = PATH, iface = FDO,
 		        member = "CloseNotification", sig = "u", args = {tostring(id)}}
 	end
 
-	if m.kind == "NOTIFY-READ" then
+	if m.payload.action == "read" then
 		return {dest = FDO, path = PATH, iface = OURS,
 		        member = "MarkAllRead", sig = "", args = {}}
 	end
 
-	return nil
+	return nil, "badarg", "unknown action"
 end

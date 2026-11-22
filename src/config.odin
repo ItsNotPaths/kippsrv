@@ -33,6 +33,7 @@ Src_Spec :: struct {
 	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
 	retains: []string,   // the topic patterns it may retain
+	takes:   []string,   // the topic patterns of the requests it takes
 }
 
 @(private = "file")
@@ -163,6 +164,7 @@ l_source :: proc "c" (L: ^lua.State) -> c.int {
 	s.bus_name, _ = field_str(L, "bus_name")
 	s.every = field_int(L, "every")
 	s.retains = field_list(L, "retains")
+	s.takes = field_list(L, "takes")
 
 	v := vm_of(L)
 	if v.declared != nil && s.name != "" {
@@ -181,6 +183,8 @@ spec_free :: proc(s: ^Src_Spec) {
 	delete(s.dbus)
 	for pattern in s.retains do delete(pattern)
 	delete(s.retains)
+	for pattern in s.takes do delete(pattern)
+	delete(s.takes)
 }
 
 // ---------------------------------------------------------------- loading
@@ -263,6 +267,13 @@ load_file :: proc(v: ^Vm, cfg: ^Config, path: string) {
 
 	reason := ""
 	for s, i in declared {
+		// The status line carries a claim as one comma-joined field.
+		for pattern in s.retains {
+			if !is_pattern(pattern) || strings.contains_rune(pattern, ',') {
+				reason = fmt.tprintf("%q is not a pattern", pattern)
+			}
+		}
+		for pattern in s.takes do if !is_pattern(pattern) do reason = fmt.tprintf("%q is not a pattern", pattern)
 		for earlier in declared[:i] {
 			if earlier.name == s.name do reason = fmt.tprintf("it names %q twice", s.name)
 		}
@@ -339,6 +350,7 @@ config_start :: proc(ss: ^Sources, cfg: ^Config) -> int {
 		}
 		src.thr = spec.throttle
 		src.retains = spec.retains    // the config outlives the sources
+		src.takes = spec.takes
 		started += 1
 	}
 	return started

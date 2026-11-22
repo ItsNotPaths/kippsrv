@@ -1,4 +1,4 @@
-// The outbound seam.
+// Requests, the outbound seam.
 //
 // Reading is the hard direction and it is why this daemon exists: five
 // transports and eight formats marshalled onto one socket. Writing is not
@@ -6,15 +6,15 @@
 // and anything can run a command. This path is for what is left over: the
 // cases where kippsrv holds the only descriptor that reaches the thing.
 //
-// A command is offered to each source in configuration order, and the first
-// adapter that answers owns it. The core never learns what a verb means.
+// A request is a publish. It reaches every source whose `takes` matches its
+// topic, as MQTT delivers to every subscriber. The core never learns what an
+// action means.
 package kippsrv
 
 import "core:fmt"
 import "core:sys/posix"
 
-// What an adapter answered with. Nothing at all means the command was not
-// its, and the next source is asked.
+// What an adapter answered with. Nothing at all means nothing to do.
 
 // Bytes for the source's own channel, exactly as they go out.
 Cmd_Bytes :: struct {
@@ -29,7 +29,7 @@ Cmd_Call :: struct {
 	args:                           []string,
 }
 
-// The verb was this adapter's and something about it was wrong.
+// The request was wrong.
 Cmd_Fail :: struct {
 	code, msg: string,
 }
@@ -49,30 +49,25 @@ cmd_bind :: proc(ss: ^Sources) {
 	outbound = ss
 }
 
-// (hole requests :tags broker) offers each command to every source in order; v2 adapters subscribe to request topics.
-command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
+// A refusal goes back to the client that sent the request, when one did. A
+// source that cannot be reached is only logged: kipp has no code for it.
+request :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 	if outbound == nil do return
-	about := fmt.tprintf("topic=%s", m.topic)
-
 	for src in outbound.list {
-		what := vm_command(outbound.vm, src.adapter, m, src.name)
-		if what == nil do continue
-
-		switch v in what {
+		if !any_match(src.takes, m.topic) do continue
+		switch v in vm_request(outbound.vm, src.adapter, m, src.name) {
 		case Cmd_Fail:
-			send_error(s, fd, v.code, about, v.msg)
+			send_error(s, fd, v.code, fmt.tprintf("topic=%s", m.topic), v.msg)
 		case Cmd_Bytes:
 			if !src_send(src, transmute([]byte)v.data) {
-				send_error(s, fd, "nosrc", about,
-				           fmt.tprintf("%s is not listening", src.name))
+				fmt.eprintfln("kippsrv: source %q is not listening, a %s request was dropped",
+				              src.name, m.topic)
 			}
 		case Cmd_Call:
 			if !dbus_call(src, v) {
-				send_error(s, fd, "nosrc", about,
-				           fmt.tprintf("%s refused the call", src.name))
+				fmt.eprintfln("kippsrv: source %q refused the call, a %s request was dropped",
+				              src.name, m.topic)
 			}
 		}
-		return
 	}
-	// A publish no adapter takes is dropped, as MQTT does.
 }

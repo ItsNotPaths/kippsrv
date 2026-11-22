@@ -8,28 +8,29 @@
 -- the format rather than the adapter.
 
 -- Going the other way is a translation, because hedl takes the action names
--- its own key table uses, one to a line, on the FIFO the `cmd` path names.
+-- its own key table uses, one to a line, on its stdin.
 --
 -- `spawn` is deliberately absent. A consumer that wants to start a program
 -- can start it, and putting it here would turn a socket anyone in this
 -- session can reach into a way to run anything.
-local verbs = {
-	VIEW       = {"view",             "tag"},
-	TAG        = {"tag",              "tag"},
-	TOGGLEVIEW = {"toggleview",       "tag"},
-	TOGGLETAG  = {"toggletag",        "tag"},
-	LAYOUT     = {"setlayout",        "word"},
-	FOCUS      = {"focusstack",       "num"},
-	MONITOR    = {"focusmon",         "num"},
-	MOVE       = {"tagmon",           "num"},
-	MASTER     = {"setmfact",         "num"},
-	NMASTER    = {"incnmaster",       "num"},
-	CLOSE      = {"killclient"},
-	ZOOM       = {"zoom"},
-	FLOAT      = {"togglefloating"},
-	FULLSCREEN = {"togglefullscreen"},
-	RELOAD     = {"reload"},
-	QUIT       = {"quit"},
+-- action = {hedl's name, the key its argument comes in}
+local actions = {
+	view       = {"view",             "tag"},
+	tag        = {"tag",              "tag"},
+	toggleview = {"toggleview",       "tag"},
+	toggletag  = {"toggletag",        "tag"},
+	layout     = {"setlayout",        "name"},
+	focus      = {"focusstack",       "by"},
+	monitor    = {"focusmon",         "by"},
+	move       = {"tagmon",           "by"},
+	master     = {"setmfact",         "by"},
+	nmaster    = {"incnmaster",       "by"},
+	close      = {"killclient"},
+	zoom       = {"zoom"},
+	float      = {"togglefloating"},
+	fullscreen = {"togglefullscreen"},
+	reload     = {"reload"},
+	quit       = {"quit"},
 }
 
 function feed(line)
@@ -41,23 +42,20 @@ function feed(line)
 	k.emit(kind, table.unpack(f))
 end
 
--- A subject field cannot hold a tab or a newline: the line it came from
--- was split on both. So the argument goes out as it arrived and there is
--- nothing to escape.
-function command(m)
-	local v = verbs[m.kind]
-	if not v then return nil end
+-- publish wm/request action=view tag=2. A payload value cannot hold a tab or
+-- a newline, so the argument goes out as it arrived.
+function request(m)
+	local v = actions[m.payload.action or ""]
+	if not v then return nil, "badarg", "unknown action" end
 	if not v[2] then return v[1] .. "\n" end
 
-	local arg = m.subj[1]
-	if not arg then return nil, "badarg", m.kind .. " needs an argument" end
+	local arg = m.payload[v[2]]
+	if not arg then return nil, "badarg", v[2] .. "= is missing" end
 
 	local n = tonumber(arg)
-	if v[2] == "num" and not n then
-		return nil, "badarg", m.kind .. " takes a number"
-	end
+	if v[2] == "by" and not n then return nil, "badarg", "by= takes a number" end
 	if v[2] == "tag" and (not n or n < 1 or n > 9 or n % 1 ~= 0) then
-		return nil, "badarg", m.kind .. " takes a tag, 1 to 9"
+		return nil, "badarg", "tag= takes a tag, 1 to 9"
 	end
 	return v[1] .. "\t" .. arg .. "\n"
 end

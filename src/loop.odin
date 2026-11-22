@@ -1,6 +1,7 @@
 // The event loop. The only place in the program that blocks.
 package kippsrv
 
+import "core:strings"
 import "core:sys/posix"
 
 MAX_POLL :: 64
@@ -56,6 +57,7 @@ run :: proc(l: ^Loop) {
 		src_settle(l.src)
 		publish(l, src_status(l.src))
 		publish(l, watcher_facts(l.src))
+		srv_wills(l.srv)
 		store_project(l.store)
 		srv_flush(l.srv)
 
@@ -75,6 +77,10 @@ publish :: proc(l: ^Loop, es: []Emit) {
 		line := store_apply(l.store, e)
 		if line == "" do continue
 		broadcast(l.srv, line)
+		if strings.has_prefix(line, "publish\t") {
+			m, _ := parse(line, context.temp_allocator)
+			request(l.srv, &m, -1)
+		}
 		src_moved(l.src, e.src)
 	}
 }

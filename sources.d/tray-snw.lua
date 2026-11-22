@@ -10,15 +10,15 @@
 -- connection is kippsrv's. Nothing else in the session can reach it.
 -- Owning the name needs compiled code; naming the kind does not, so the
 -- registrations arrive here like anything else.
-source { name = "tray", watcher = true, retains = {"tray/*"} }
+source { name = "tray", watcher = true, retains = {"tray/*"}, takes = "tray/request" }
 
 local ITEM = "org.kde.StatusNotifierItem"
 
-local verbs = {
-	ACTIVATE  = {"Activate",          "ii"},
-	SECONDARY = {"SecondaryActivate", "ii"},
-	MENU      = {"ContextMenu",       "ii"},
-	SCROLL    = {"Scroll",            "is"},
+local actions = {
+	activate  = {"Activate",          "ii"},
+	secondary = {"SecondaryActivate", "ii"},
+	menu      = {"ContextMenu",       "ii"},
+	scroll    = {"Scroll",            "is"},
 }
 
 function feed(line)
@@ -33,25 +33,25 @@ function feed(line)
 	end
 end
 
--- The subject is what the item registered as: a bus name, then the object
--- path on it. x and y are where the pointer was, which is what an item
--- places its own menu against.
-function command(m)
-	local v = verbs[m.kind]
-	if not v then return nil end
+-- publish tray/request action=activate item=<bus name>/<object path> x= y=
+-- The item is what it registered as. x and y are where the pointer was,
+-- which is what an item places its own menu against.
+function request(m)
+	local v = actions[m.payload.action or ""]
+	if not v then return nil, "badarg", "unknown action" end
 
-	local dest, path = (m.subj[1] or ""):match("^([^/]+)(/.+)$")
+	local dest, path = (m.payload.item or ""):match("^([^/]+)(/.+)$")
 	if not dest then
-		return nil, "badarg", "the subject is <bus name>/<object path>"
+		return nil, "badarg", "item= is <bus name>/<object path>"
 	end
 
-	local args = {m.attr.x or "0", m.attr.y or "0"}
+	local args = {m.payload.x or "0", m.payload.y or "0"}
 	if v[2] == "is" then
-		local dir = m.attr.dir or "vertical"
+		local dir = m.payload.dir or "vertical"
 		if dir ~= "vertical" and dir ~= "horizontal" then
-			return nil, "badarg", "dir is vertical or horizontal"
+			return nil, "badarg", "dir= is vertical or horizontal"
 		end
-		args = {m.attr.delta or "0", dir}
+		args = {m.payload.delta or "0", dir}
 	end
 
 	return {dest = dest, path = path, iface = ITEM,
