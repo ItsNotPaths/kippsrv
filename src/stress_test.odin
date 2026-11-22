@@ -313,7 +313,7 @@ a_consumer_cannot_forge_a_fact :: proc(t: ^testing.T) {
 	defer posix.close(fd)
 
 	srv_ready(s, s.fd)          // accept
-	srv_flush(s)                // greeting and sync out of the way
+	srv_flush(s)                // greeting out of the way
 
 	forged := "retain\ttag/eDP-1/9\tstate=focused\n"
 	posix.send(fd, raw_data(forged), c.size_t(len(forged)), {})

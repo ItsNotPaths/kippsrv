@@ -7,13 +7,14 @@ import "core:os"
 import "core:sys/linux"
 import "core:sys/posix"
 
-// The dump is the store, in the order facts were first seen.
+// The dump is the store's lines the pattern matches, in the order facts were
+// first seen.
 store: Store
 
-dump :: proc(s: ^Server, fd: posix.FD) {
+dump :: proc(s: ^Server, fd: posix.FD, pattern: string) {
 	lines := make([dynamic]string, context.temp_allocator)
 	store_each(&store, &lines)
-	for line in lines do send_to(s, fd, line)
+	for line in lines do if matches(pattern, topic_of(line)) do send_to(s, fd, line)
 }
 
 @(private = "file")

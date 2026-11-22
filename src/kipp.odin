@@ -11,6 +11,7 @@ import "core:sys/posix"
 MAX_LINE   :: 1024
 MAX_FIELDS :: 32
 MAX_CONN   :: 32
+MAX_SUBS   :: 64     // patterns one connection may hold
 
 // ---------------------------------------------------------------- parsing
 
@@ -36,6 +37,23 @@ parse :: proc(line: string, allocator := context.allocator) -> (m: Msg, ok: bool
 		}
 	}
 	return m, m.verb != ""
+}
+
+// The second field.
+topic_of :: proc(line: string) -> string {
+	_, _, rest := strings.partition(line, "\t")
+	topic, _, _ := strings.partition(rest, "\t")
+	return topic
+}
+
+// fnmatch(3) without FNM_PATHNAME, so '*' crosses '/'.
+matches :: proc(pattern, topic: string) -> bool {
+	return posix.fnmatch(cstr(pattern), cstr(topic), {}) == 0
+}
+
+is_pattern :: proc(pattern: string) -> bool {
+	for ch in transmute([]byte)pattern do if ch < 0x20 || ch == 0x7f do return false
+	return len(pattern) > 0
 }
 
 // The first segment is a kind. The rest hold no control character, '*', '?'
@@ -181,7 +199,8 @@ Conn :: struct {
 	fd:  posix.FD,
 	r:   Rdbuf,
 	out: [dynamic]byte,   // this pass's lines, written in one send
-	eof: bool,            // it will send no more commands. It still reads
+	eof: bool,            // it will send no more lines. It still reads
+	patterns: [dynamic]string,   // what it subscribed to
 }
 
 // A unix socket accounts per message, not per byte: one send costs about 766
@@ -193,7 +212,7 @@ Server :: struct {
 	path:    string,
 	greet:   string,
 	conns:   [dynamic]Conn,
-	on_dump: proc(s: ^Server, fd: posix.FD),
+	on_dump: proc(s: ^Server, fd: posix.FD, pattern: string),
 	on_cmd:  proc(s: ^Server, m: ^Msg, fd: posix.FD),
 }
 
@@ -275,10 +294,7 @@ serve :: proc(path, greet: string) -> (s: ^Server, ok: bool) {
 
 stop :: proc(s: ^Server) {
 	if s == nil do return
-	for &c in s.conns {
-		posix.close(c.fd)
-		delete(c.out)      // drop() does this; stop() used to forget
-	}
+	for &c in s.conns do close_conn(&c)
 	posix.close(s.fd)
 	posix.unlink(strings.clone_to_cstring(s.path, context.temp_allocator))
 	delete(s.conns)
@@ -306,9 +322,16 @@ srv_fds :: proc(s: ^Server, dst: []posix.pollfd) -> int {
 @(private = "file")
 // (hole will :tags broker :needs connect) a dropped connection leaves nothing behind; v2 publishes the client's will.
 drop :: proc(s: ^Server, i: int) {
-	posix.close(s.conns[i].fd)
-	delete(s.conns[i].out)
+	close_conn(&s.conns[i])
 	unordered_remove(&s.conns, i)
+}
+
+@(private = "file")
+close_conn :: proc(c: ^Conn) {
+	posix.close(c.fd)
+	delete(c.out)
+	for p in c.patterns do delete(p)
+	delete(c.patterns)
 }
 
 send_to :: proc(s: ^Server, fd: posix.FD, line: string) {
@@ -319,15 +342,50 @@ send_to :: proc(s: ^Server, fd: posix.FD, line: string) {
 	}
 }
 
-// (hole subscribe :tags broker) every consumer gets every line; v2 sends a line only where a subscribe pattern matches it (fnmatch).
+// To every connection with a pattern that matches the line's topic.
 broadcast :: proc(s: ^Server, line: string) {
+	topic := topic_of(line)
 	i := 0
 	for i < len(s.conns) {
-		if queue(&s.conns[i], line) {
-			i += 1
-		} else {
+		if subscribed(&s.conns[i], topic) && !queue(&s.conns[i], line) {
 			drop(s, i)   // unordered_remove moves the last conn into i
+			continue
 		}
+		i += 1
+	}
+}
+
+@(private = "file")
+subscribed :: proc(c: ^Conn, topic: string) -> bool {
+	for p in c.patterns do if matches(p, topic) do return true
+	return false
+}
+
+// The retained lines the pattern matches, then sync. A pattern already held
+// is answered again and not stored twice.
+@(private = "file")
+subscribe :: proc(s: ^Server, fd: posix.FD, c: ^Conn, pattern: string) {
+	held := false
+	for p in c.patterns do held ||= p == pattern
+	if !held {
+		if len(c.patterns) == MAX_SUBS {
+			send_error(s, fd, "badarg", fmt.tprintf("topic=%s", pattern),
+			           "too many subscribes")
+			return
+		}
+		append(&c.patterns, strings.clone(pattern))
+	}
+	if s.on_dump != nil do s.on_dump(s, fd, pattern)
+	send_to(s, fd, fmt.tprintf("sync\t%s", pattern))
+}
+
+@(private = "file")
+unsubscribe :: proc(c: ^Conn, pattern: string) {
+	for p, i in c.patterns {
+		if p != pattern do continue
+		delete(p)
+		unordered_remove(&c.patterns, i)
+		return
 	}
 }
 
@@ -382,10 +440,6 @@ accept_one :: proc(s: ^Server) {
 		return
 	}
 	append(&s.conns, Conn{fd = fd})
-
-	// (hole subscribe) the dump goes out on accept; v2 sends what each subscribe matches, then sync.
-	if s.on_dump != nil do s.on_dump(s, fd)
-	send_to(s, fd, "sync\tstate")
 }
 
 // By fd, not by index, for the same reason srv_ready is. Sending an error can
@@ -424,12 +478,22 @@ read_conn :: proc(s: ^Server, fd: posix.FD) {
 		case .Line:
 			m, _ := parse(string(line[:n]), context.temp_allocator)
 			switch m.verb {
+			case "subscribe", "unsubscribe":
+				if !is_pattern(m.topic) {
+					send_error(s, fd, "badtopic", fmt.tprintf("topic=%s", m.topic),
+					           "not a pattern")
+				} else if m.verb == "subscribe" {
+					subscribe(s, fd, &s.conns[i], m.topic)
+				} else {
+					unsubscribe(&s.conns[i], m.topic)
+				}
 			case "publish":
 				if !is_topic(m.topic) {
 					send_error(s, fd, "badtopic", fmt.tprintf("topic=%s", m.topic),
 					           "not a topic")
 					continue
 				}
+				broadcast(s, string(line[:n]))
 				if s.on_cmd != nil do s.on_cmd(s, &m, fd)
 			case "retain":
 				// Only a claim's owner retains, so nothing that connects can

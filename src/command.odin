@@ -49,13 +49,10 @@ cmd_bind :: proc(ss: ^Sources) {
 	outbound = ss
 }
 
-// (hole requests :tags broker :needs (subscribe exec-stdin source-call)) offers each command to every source in order; v2 adapters subscribe to request topics.
+// (hole requests :tags broker :needs (exec-stdin source-call)) offers each command to every source in order; v2 adapters subscribe to request topics.
 command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
+	if outbound == nil do return
 	about := fmt.tprintf("topic=%s", m.topic)
-	if outbound == nil {
-		send_error(s, fd, "nosrc", about, "nothing is configured")
-		return
-	}
 
 	for src in outbound.list {
 		what := vm_command(outbound.vm, src.adapter, m, src.name)
@@ -77,5 +74,5 @@ command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 		}
 		return
 	}
-	send_error(s, fd, "badcmd", about, "no adapter takes this command")
+	// No adapter takes it. A publish nobody takes is dropped, as MQTT does.
 }

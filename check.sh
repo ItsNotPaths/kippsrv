@@ -28,10 +28,13 @@ CONFEOF
 SRV=$!
 sleep 0.4
 
+ask() {
+	printf '%s' "$1" | timeout 2 socat -t1 - UNIX-CONNECT:"$SOCK" 2>/dev/null
+}
+
 want() {
 	name=$1 pattern=$2 send=$3
-	out=$(printf '%s' "$send" | timeout 2 socat -t1 - UNIX-CONNECT:"$SOCK" 2>/dev/null)
-	if printf '%s' "$out" | grep -q "$pattern"; then
+	if ask "$send" | grep -q "$pattern"; then
 		echo "ok    $name"
 	else
 		echo "FAIL  $name (no match for '$pattern')"
@@ -39,13 +42,36 @@ want() {
 	fi
 }
 
+want_none() {
+	name=$1 pattern=$2 send=$3
+	if ask "$send" | grep -q "$pattern"; then
+		echo "FAIL  $name (got '$pattern')"
+		FAILS=$((FAILS + 1))
+	else
+		echo "ok    $name"
+	fi
+}
+
 want greeting   'version	2	broker=kippsrv'   ''
-want dump       'retain	tag/0/1	state=occupied' ''
-want late       'retain	layout/0'              ''
-want sync       '^sync	state$'                ''
+want dump       'retain	tag/0/1	state=occupied' 'subscribe	*
+'
+want late       'retain	layout/0'              'subscribe	*
+'
+want sync       '^sync	tag/\*$'              'subscribe	tag/*
+'
+want second_sub '^retain	layout'               'subscribe	tag/*
+subscribe	layout/*
+'
+want_none only_match '^retain	tag/'           'subscribe	layout/*
+'
 want no_forgery 'error	noconnect'             'retain	tag/0/9	state=focused
 '
 want no_verb    'error	badverb	verb=TAG'      'TAG	9
+'
+want own_line   '^publish	key/x$'           'subscribe	key/*
+publish	key/x
+'
+want_none unheard '^publish'                'publish	key/x
 '
 
 # (hole requests) the v1 command seam is gone; v2 requests bring its check back.
@@ -67,7 +93,8 @@ DCONFEOF
 	./kippsrv "$DCONF" 2>/dev/null &
 	DSRV=$!
 	sleep 0.4
-	timeout 3 socat -u UNIX-CONNECT:"$DSOCK" - > /tmp/kippsrv-dbus.$$.out 2>/dev/null &
+	{ printf 'subscribe\t*\n'; sleep 3; } | timeout 3 socat - UNIX-CONNECT:"$DSOCK" \
+		> /tmp/kippsrv-dbus.$$.out 2>/dev/null &
 	sleep 0.4
 	busctl --user emit /x org.kippsrv.Test Sig "sa{sv}" hello 2 k1 s v1 k2 i 42 >/dev/null 2>&1
 	sleep 1.5

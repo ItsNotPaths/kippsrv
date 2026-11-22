@@ -2,6 +2,7 @@ package kippsrv
 
 import "core:fmt"
 import "core:c"
+import "core:strings"
 import "core:sys/posix"
 import "core:testing"
 import "core:time"
@@ -16,7 +17,7 @@ rate :: proc(name: string, n: int, d: time.Duration) {
 @(test)
 bench_layers :: proc(t: ^testing.T) {
 	N :: 50_000
-	line := "tag\teDP-1\t2\tstate=focused,occupied"
+	line := "retain\ttag/eDP-1/2\tstate=focused,occupied"
 
 	fmt.println("\n--- one line through each layer")
 
@@ -78,7 +79,7 @@ bench_layers :: proc(t: ^testing.T) {
 @(test)
 bench_broadcast :: proc(t: ^testing.T) {
 	N :: 20_000
-	line := "tag\teDP-1\t2\tstate=focused,occupied"
+	line := "retain\ttag/eDP-1/2\tstate=focused,occupied"
 
 	dial :: proc(path: string) -> posix.FD {
 		addr: posix.sockaddr_un
@@ -95,7 +96,7 @@ bench_broadcast :: proc(t: ^testing.T) {
 	fmt.println("--- broadcast, consumers that never read")
 	for consumers in ([]int{0, 1, 4, 16}) {
 		path := fmt.tprintf("/tmp/kbench-%d.sock", consumers)
-		s, ok := serve(path, "version\t1\tbench\tproto=1")
+		s, ok := serve(path, "version\t2\tbroker=bench")
 		if !testing.expect(t, ok) do continue
 		defer stop(s)
 
@@ -105,6 +106,7 @@ bench_broadcast :: proc(t: ^testing.T) {
 			if fd < 0 do break
 			append(&fds, fd)
 			srv_ready(s, s.fd)          // accept it
+			append(&s.conns[len(s.conns) - 1].patterns, strings.clone("*"))
 		}
 		defer for fd in fds do posix.close(fd)
 
