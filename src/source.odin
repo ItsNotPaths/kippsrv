@@ -32,6 +32,7 @@ Prefix :: struct {
 // Hand over whatever arrived. For a source that frames itself.
 Raw :: struct {}
 
+// (hole lines-only :tags sources) Prefix and Raw go; every source is lines.
 Framing :: union #no_nil {
 	Lines,
 	Prefix,
@@ -138,6 +139,7 @@ add :: proc(ss: ^Sources, s: ^Source) -> ^Source {
 
 // Spawn a command and read its stdout.
 // A command that ends and is run again on a period. `every` of 0 runs it once.
+// (hole exec-sh :tags sources) runs an argv list; v2 runs the exec string with sh -c.
 src_exec :: proc(ss: ^Sources, name: string, argv: []string, adapter: Adapter,
                  framing: Framing = Lines{}, every: i64 = 0) -> (^Source, bool) {
 	// Built before the fork. Between fork and exec only async-signal-safe
@@ -150,6 +152,7 @@ src_exec :: proc(ss: ^Sources, name: string, argv: []string, adapter: Adapter,
 	cargv[len(argv)] = nil
 
 	fds: [2]posix.FD
+	// (hole exec-stdin :tags sources) the child gets only a stdout pipe; v2 also gives it stdin, as the way back.
 	if posix.pipe(&fds) != .OK do return nil, false
 
 	pid := posix.fork()
@@ -287,6 +290,7 @@ src_timer :: proc(ss: ^Sources, name: string, every_ms: i64,
 //
 // The line limit is what makes a write whole or nothing: a FIFO write under
 // PIPE_BUF cannot interleave with another writer's.
+// (hole exec-stdin) writes to a sock source or a cmd= path; v2 writes to stdin or the socket, and cmd= goes.
 src_send :: proc(s: ^Source, data: []byte) -> bool {
 	if len(data) == 0 || len(data) > MAX_LINE do return false
 

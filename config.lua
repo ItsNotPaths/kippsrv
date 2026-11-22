@@ -6,6 +6,7 @@
 -- $VAR and ~ are expanded by kippsrv, so this file never reads the
 -- environment and nothing in it can reach a variable it was not given.
 
+-- (hole source-files) this file goes; each source moves into its adapter as a source{} call.
 return {
 	socket = "$XDG_RUNTIME_DIR/kippsrv.sock",
 	state  = "$XDG_RUNTIME_DIR/kippsrv.state",

@@ -1,3 +1,4 @@
+-- (hole kippbus-notify) goes; kippbus notify prints kipp itself.
 -- What org.freedesktop.Notifications received.
 --
 -- The name is owned by compiled code, because only compiled code can own one.

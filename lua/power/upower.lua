@@ -1,3 +1,4 @@
+-- (hole adapters-v2) emits v1 kinds, and its source lines live in config.lua.
 -- upower -i: an indented multi-line record. Two-space `key: value` is the
 -- device, a bare word opens a section, four-space pairs belong to it.
 --

@@ -14,6 +14,7 @@ MAX_CONN   :: 32
 
 // ---------------------------------------------------------------- parsing
 
+// (hole wire-v2 :tags wire :sev blocker) Msg is v1's kind, subject, attributes; v2 follows kipp's SPEC.md, which waits on kipp spec-v2.
 Msg :: struct {
 	kind: string,
 	subj: [dynamic]string,
@@ -43,6 +44,7 @@ parse :: proc(line: string, allocator := context.allocator) -> (m: Msg, ok: bool
 	return m, m.kind != ""
 }
 
+// (hole wire-v2) case as direction is gone in v2.
 is_cmd :: proc(m: ^Msg) -> bool {
 	return len(m.kind) > 0 && m.kind[0] >= 'A' && m.kind[0] <= 'Z'
 }
@@ -303,6 +305,7 @@ srv_fds :: proc(s: ^Server, dst: []posix.pollfd) -> int {
 }
 
 @(private = "file")
+// (hole will :tags broker :needs connect) a dropped connection leaves nothing behind; v2 publishes the client's will.
 drop :: proc(s: ^Server, i: int) {
 	posix.close(s.conns[i].fd)
 	delete(s.conns[i].out)
@@ -317,6 +320,7 @@ send_to :: proc(s: ^Server, fd: posix.FD, line: string) {
 	}
 }
 
+// (hole subscribe :tags broker :needs wire-v2) every consumer gets every line; v2 sends a line only where a subscribe pattern matches it (fnmatch).
 broadcast :: proc(s: ^Server, line: string) {
 	i := 0
 	for i < len(s.conns) {
@@ -379,6 +383,7 @@ accept_one :: proc(s: ^Server) {
 	}
 	append(&s.conns, Conn{fd = fd})
 
+	// (hole subscribe) the dump goes out on accept; v2 sends what each subscribe matches, then sync.
 	if s.on_dump != nil do s.on_dump(s, fd)
 	send_to(s, fd, "sync\tstate")
 }
@@ -426,6 +431,7 @@ read_conn :: proc(s: ^Server, fd: posix.FD) {
 			// send a fact. Leaving this to each handler makes the direction
 			// rule a convention. Here it is a boundary, so nothing that
 			// connects can forge state for everything else that reads.
+			// (hole connect :tags broker :needs (wire-v2 claims)) a consumer may only send commands; v2 takes connect <name>, retain within that claim, publish from anyone.
 			if !is_cmd(&m) {
 				send_error(s, fd, "badcmd", m.kind,
 				           "a consumer sends commands, not facts")

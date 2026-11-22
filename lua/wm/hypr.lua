@@ -1,3 +1,4 @@
+-- (hole adapters-v2) emits v1 kinds, and its source lines live in config.lua.
 -- Hyprland. socket2 emits `event>>data`, comma separated, so a title holding
 -- a comma is ambiguous. Split only as far as the format guarantees.
 --

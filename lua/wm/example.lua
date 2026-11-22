@@ -1,3 +1,4 @@
+-- (hole adapters-v2) emits v1 kinds, and its source lines live in config.lua.
 -- A stand-in window manager adapter, until wm/hypr.lua exists.
 --
 -- An adapter returns a table. `feed` takes one line of the foreign format and

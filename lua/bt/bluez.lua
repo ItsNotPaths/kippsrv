@@ -1,3 +1,4 @@
+-- (hole bus-adapters :tags lua :needs (lua-surface source-call kippbus-match)) reads sd-bus JSON inside kippsrv; v2 reads kippbus match.
 -- bluez, on the system bus. Two ways in, like every D-Bus adapter here: a
 -- GetManagedObjects poll for what is true now, and InterfacesAdded,
 -- InterfacesRemoved and PropertiesChanged for what changes after.

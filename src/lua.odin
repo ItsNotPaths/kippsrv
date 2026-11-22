@@ -128,6 +128,7 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 	// '=' reads as the first attribute, so a subject that holds one leaves
 	// the fact keyed on its kind alone, colliding with every other fact of
 	// that kind. An event is never stored and needs no subject.
+	// (hole lua-surface) the subject check goes; a topic is one field.
 	if kind != .Event && n >= 2 {
 		if len(built.subj) == 0 {
 			culprit := ""
@@ -334,6 +335,7 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 	lua.sethook(L, on_step, lua.MASKCOUNT, STEPS)
 
 	lua.newtable(L)
+	// (hole lua-surface :tags lua :needs wire-v2) k.emit, k.event, k.drop build v1 lines; v2 is k.retain(topic, ...) and k.publish(topic, ...).
 	lua.pushcfunction(L, l_emit);  lua.setfield(L, -2, "emit")
 	lua.pushcfunction(L, l_log);   lua.setfield(L, -2, "log")
 	lua.pushcfunction(L, l_parse); lua.setfield(L, -2, "parse")
@@ -363,6 +365,7 @@ fail :: proc(v: ^Vm, what: string) -> bool {
 }
 
 // A script returns a table of functions. `feed` is the only one used today.
+// (hole source-call :tags lua) an adapter only returns functions; v2 files declare their sources with source{...} calls, commented out is off.
 vm_load :: proc(v: ^Vm, path: string) -> (a: Adapter, ok: bool) {
 	v.budget = SLICES
 	if lua.L_loadfile(v.L, cstr(path)) != .OK do return 0, fail(v, path)
@@ -392,6 +395,7 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> []Emit {
 	lua.rawgeti(v.L, lua.REGISTRYINDEX, lua.Integer(a))
 	if lua.getfield(v.L, -1, cstr(fn)) != c.int(lua.TFUNCTION) {
 		lua.pop(v.L, 2)
+		// (hole passthrough :tags lua :needs (source-files lua-surface)) a source with no feed drops every line; v2 passes its kipp lines straight through.
 		return nil        // an adapter need not define every function
 	}
 
@@ -424,6 +428,7 @@ vm_feed :: proc(v: ^Vm, a: Adapter, line: string) -> []Emit {
 // Odin does not deframe. The moment the core learns a magic string or a
 // header layout it has learned a foreign protocol, and Pillar 1 is gone.
 // "lines or raw" is a transport noun, which the core is allowed to hold.
+// (hole lines-only) goes with Prefix and Raw.
 vm_feed_bytes :: proc(v: ^Vm, a: Adapter, data: []byte) -> []Emit {
 	return call(v, a, "feed", data)
 }
@@ -491,6 +496,7 @@ read_call :: proc(L: ^lua.State, at: c.int) -> Cmd_Call {
 //
 // The source's name goes along, because one adapter file can serve several
 // sources and a command may be meant for only one of them.
+// (hole requests) goes with command.odin.
 vm_command :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
 	if a == NO_ADAPTER do return nil
 	clear(&v.emitted)

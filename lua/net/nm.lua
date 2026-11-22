@@ -1,3 +1,4 @@
+-- (hole adapters-v2) emits v1 kinds, and its source lines live in config.lua.
 -- nmcli -t: colon separated, and a field holding a colon escapes it as `\:`.
 -- Splitting on a bare colon is wrong, which is the reason kipp uses a byte a
 -- value may never hold.

@@ -1,3 +1,4 @@
+-- (hole adapters-v2 :tags lua :needs (lua-surface source-call)) emits v1 kinds, and its source lines live in config.lua.
 -- pactl list short: already tab separated. The adapter only renames and
 -- reorders, which is what an adapter looks like when the source got it right.
 return {

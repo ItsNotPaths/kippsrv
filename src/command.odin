@@ -49,6 +49,7 @@ cmd_bind :: proc(ss: ^Sources) {
 	outbound = ss
 }
 
+// (hole requests :tags broker :needs (subscribe exec-stdin source-call)) offers each command to every source in order; v2 adapters subscribe to request topics.
 command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 	if outbound == nil {
 		send_error(s, fd, "nosrc", m.kind, "nothing is configured")

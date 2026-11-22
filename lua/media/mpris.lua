@@ -1,3 +1,4 @@
+-- (hole bus-adapters) reads sd-bus JSON inside kippsrv; v2 reads kippbus match.
 -- MPRIS. One file, two ways in: a poll of `busctl ... GetAll`, or a live
 -- PropertiesChanged signal. kippsrv gives both the JSON busctl prints, so
 -- neither needs its own adapter.

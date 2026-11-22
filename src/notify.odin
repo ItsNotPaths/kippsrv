@@ -14,6 +14,7 @@
 // Two members past the spec live on an interface of our own. Closing is in the
 // spec; being read is not, because a spec notification is a toast that appears
 // whether you wanted it or not, and these are only ever read on purpose.
+// (hole kippbus-notify :tags bus) runs inside kippsrv; v2 moves it to kippbus notify, which prints notif/* lines itself.
 package kippsrv
 
 import "core:c"

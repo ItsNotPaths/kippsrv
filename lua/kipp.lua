@@ -1,3 +1,4 @@
+-- (hole passthrough) goes; a source file with no feed passes lines through.
 -- For a program that prints kipp itself. Nothing is translated.
 --
 -- A line is a fact unless it carries event=1, which marks something that

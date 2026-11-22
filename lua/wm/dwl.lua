@@ -1,3 +1,4 @@
+-- (hole adapters-v2) emits v1 kinds, and its source lines live in config.lua.
 -- dwl printstatus: `<monitor> <kind> <data...>`, space separated, so the
 -- title has to be last.
 --

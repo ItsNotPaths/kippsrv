@@ -32,6 +32,7 @@ Store :: struct {
 // are the value, so `tag eDP-1 2 state=occupied` replaces
 // `tag eDP-1 2 state=focused` instead of sitting beside it.
 @(private = "file")
+// (hole store-topic :tags broker :needs wire-v2) keys on kind plus subject fields; v2 keys on the topic.
 key_of :: proc(line: string, allocator := context.allocator) -> (string, bool) {
 	m, ok := parse(line, context.temp_allocator)
 	if !ok do return "", false
@@ -63,6 +64,7 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 	if !ok do return ""
 	defer delete(k)
 
+	// (hole store-topic) drop is its own line in v1; in v2 a retain with no payload drops.
 	if e.kind == .Drop {
 		old, had := st.facts[k]
 		if !had do return ""
@@ -133,6 +135,7 @@ stale_line :: proc(key: string) -> string {
 
 // A source died. Its facts are last-known, not gone: the headphone still
 // exists, we just cannot see it.
+// (hole status-topic :tags broker :needs store-topic) marks each fact of a dead source stale; proposed v2: retain status/<source> state=offline.
 store_stale :: proc(st: ^Store, src: int) -> []string {
 	out := make([dynamic]string, context.temp_allocator)
 	if src == 0 do return out[:]

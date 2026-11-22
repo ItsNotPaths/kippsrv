@@ -1,3 +1,4 @@
+-- (hole adapters-v2) emits v1 kinds, and its source lines live in config.lua.
 -- brightnessctl -m: `device,class,value,percent,max`, comma separated.
 return {
 	feed = function(line)

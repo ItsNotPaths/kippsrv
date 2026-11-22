@@ -1,3 +1,4 @@
+-- (hole lines-only) needs Prefix framing, so it goes with it.
 -- i3 and sway. INCOMPLETE: this reads a reply to GET_WORKSPACES or
 -- GET_OUTPUTS, and nothing sends either request yet. Subscribed events carry
 -- a type with the high bit set and are not handled.

@@ -10,6 +10,7 @@ BASU_REV  ?= 315664a875ad37bd9cee75af00ab4d1d3edc105e
 kippsrv: src/*.odin
 	$(ODIN) build src -out:$@
 
+# (hole drop-sdbus) make static and basu exist only for sd-bus, and go with it.
 static: basu/build/libbasu.a src/*.odin
 	$(ODIN) build src -define:BASU=true -out:kippsrv \
 		-extra-linker-flags:"-L$(CURDIR)/basu/build"
@@ -69,6 +70,7 @@ lint-api:
 	echo "ok    script surface is $$n functions"
 
 # An adapter may emit only the kinds its domain declares.
+# (hole vocab-claims :tags lint :needs claims) checks lua/ against vocab/*.txt; v2 checks claims at load, and lint-core takes its kinds from them.
 lint-vocab:
 	@./vocab.sh
 

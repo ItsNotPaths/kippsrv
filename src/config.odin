@@ -112,6 +112,7 @@ field_list :: proc(L: ^lua.State, key: cstring) -> []string {
 // The framing a source declares. Absent means lines, which is nearly always
 // right. A binary source says so.
 @(private = "file")
+// (hole lines-only) goes with Prefix and Raw.
 field_framing :: proc(L: ^lua.State) -> Framing {
 	defer lua.pop(L, 1)
 	if lua.getfield(L, -1, "framing") != c.int(lua.TTABLE) do return Lines{}
@@ -161,6 +162,7 @@ field_throttle :: proc(L: ^lua.State) -> Throttle {
 
 // ---------------------------------------------------------------- loading
 
+// (hole source-files :tags sources :needs source-call) reads one config.lua; v2 scans /usr/share then ~/.config kippsrv/sources.d, same name overrides.
 config_load :: proc(v: ^Vm, path: string) -> (cfg: Config, ok: bool) {
 	L := v.L
 	if lua.L_loadfile(L, strings.clone_to_cstring(path, context.temp_allocator)) != .OK ||
@@ -233,6 +235,7 @@ config_free :: proc(cfg: ^Config) {
 
 // Start every source the configuration names. An adapter file is loaded once
 // however many sources name it, so a seed and its stream share one state.
+// (hole claims :tags sources :needs source-call) nothing owns a topic; v2 refuses a second file claiming the same topics, naming both.
 config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 	loaded := make(map[string]Adapter, allocator = context.temp_allocator)
 	started := 0
@@ -259,6 +262,7 @@ config_start :: proc(v: ^Vm, ss: ^Sources, cfg: ^Config) -> int {
 			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.framing, spec.every)
 		case spec.sock != "":
 			src, ok = src_sock(ss, spec.name, spec.sock, a, spec.framing)
+		// (hole drop-sdbus :tags bus :needs (kippbus-match kippbus-tray kippbus-notify passthrough)) kippsrv opens D-Bus itself; v2 runs kippbus as an exec source.
 		case len(spec.dbus) > 0 || spec.watcher || spec.notify:
 			src, ok = dbus_open(ss, spec.name, spec.system, spec.dbus, a)
 			if ok && spec.watcher {

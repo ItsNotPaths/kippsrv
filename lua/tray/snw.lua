@@ -1,3 +1,4 @@
+-- (hole kippbus-tray) goes; kippbus tray prints kipp itself.
 -- The StatusNotifierWatcher's registration list.
 --
 -- The watcher owns a bus name, which only compiled code can do. What it

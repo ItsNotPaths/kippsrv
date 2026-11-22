@@ -38,6 +38,7 @@ main :: proc() {
 	}
 	defer vm_close(v)
 
+	// (hole source-files) takes a config path; v2 has no config file, and the socket and state paths are fixed.
 	path := len(os.args) > 1 ? os.args[1] : "config.lua"
 	cfg, cok := config_load(v, path)
 	if !cok do os.exit(1)
@@ -48,6 +49,7 @@ main :: proc() {
 		os.exit(1)
 	}
 
+	// (hole wire-v2) greets with version 1.
 	srv, sok := serve(cfg.socket, "version\t1\tkippsrv\tproto=1")
 	if !sok {
 		fmt.eprintfln(

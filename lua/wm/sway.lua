@@ -1,3 +1,4 @@
+-- (hole adapters-v2) emits v1 kinds, and its source lines live in config.lua.
 -- sway and i3. One JSON object a line, so this is an exec source with Lines
 -- framing and no protocol work. The binary i3 IPC in lua/wm/i3.lua is the
 -- other way to read the same window manager, and it needs an outbound request

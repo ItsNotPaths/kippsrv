@@ -1,3 +1,4 @@
+-- (hole passthrough) hedl speaks kipp already; a source file with no feed replaces this.
 -- hedl speaks kipp already (its D13), so there is nothing to translate. This
 -- file exists because kippsrv wants an adapter for every source, not because
 -- the format needs one. It splits the line and hands the fields straight to
