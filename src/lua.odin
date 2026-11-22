@@ -437,54 +437,22 @@ str_at :: proc(L: ^lua.State, i: c.int) -> string {
 	return strings.clone(string(([^]byte)(cs)[:n]), context.temp_allocator)
 }
 
-@(private = "file")
-field_at :: proc(L: ^lua.State, at: c.int, key: cstring) -> string {
-	defer lua.pop(L, 1)
-	if lua.getfield(L, at, key) != c.int(lua.TSTRING) do return ""
-	return str_at(L, -1)
-}
-
-// Read a call the adapter described. Every argument crosses as text, and the
-// signature says what each one is, because D-Bus is typed and Lua is not.
-@(private = "file")
-read_call :: proc(L: ^lua.State, at: c.int) -> Cmd_Call {
-	out := Cmd_Call{
-		dest   = field_at(L, at, "dest"),
-		path   = field_at(L, at, "path"),
-		iface  = field_at(L, at, "iface"),
-		member = field_at(L, at, "member"),
-		sig    = field_at(L, at, "sig"),
-	}
-
-	args := make([dynamic]string, context.temp_allocator)
-	defer lua.pop(L, 1)
-	if lua.getfield(L, at, "args") == c.int(lua.TTABLE) {
-		for i in 1 ..= int(lua.rawlen(L, -1)) {
-			lua.rawgeti(L, -1, lua.Integer(i))
-			append(&args, str_at(L, -1))
-			lua.pop(L, 1)
-		}
-	}
-	out.args = args[:]
-	return out
-}
-
-// One request to one adapter. It answers with bytes for its own source, a call
-// on its own bus, a refusal, or nothing.
+// One request to one adapter. It answers with bytes for its own source, a
+// refusal, or nothing. found is false when the file defines no `request`.
 //
-// The fence holds. The script names a call and never makes one, and the
+// The fence holds. The script hands back bytes and never sends them, and the
 // descriptor the answer travels down is never in its reach.
 //
 // The source's name goes along, because one adapter file can serve several
 // sources.
-vm_request :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
-	if a == NO_ADAPTER do return nil
+vm_request :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> (cmd: Cmd, found: bool) {
+	if a == NO_ADAPTER do return nil, false
 	clear(&v.emitted)
 
 	lua.rawgeti(v.L, lua.REGISTRYINDEX, lua.Integer(a))
 	if lua.getfield(v.L, -1, "request") != c.int(lua.TFUNCTION) {
 		lua.pop(v.L, 2)
-		return nil          // an adapter need not take requests
+		return nil, false
 	}
 	push_msg(v.L, m)
 	lua.pushstring(v.L, cstr(source))
@@ -494,7 +462,7 @@ vm_request :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
 	if lua.Status(lua.pcall(v.L, 2, 3, 0)) != .OK {
 		fail(v, "request")
 		lua.pop(v.L, 1)
-		return nil
+		return nil, true
 	}
 	defer lua.pop(v.L, 4)   // three results and the adapter table
 
@@ -510,18 +478,13 @@ vm_request :: proc(v: ^Vm, a: Adapter, m: ^Msg, source: string) -> Cmd {
 	}
 
 	top := lua.gettop(v.L)
-	#partial switch lua.type(v.L, top - 2) {
-	case .STRING:
-		return Cmd_Bytes{str_at(v.L, top - 2)}
-	case .TABLE:
-		return read_call(v.L, top - 2)
-	}
+	if lua.type(v.L, top - 2) == .STRING do return Cmd_Bytes{str_at(v.L, top - 2)}, true
 
 	// Nothing, and a reason: the request was wrong.
 	if lua.type(v.L, top - 1) == .STRING {
-		return Cmd_Fail{str_at(v.L, top - 1), str_at(v.L, top)}
+		return Cmd_Fail{str_at(v.L, top - 1), str_at(v.L, top)}, true
 	}
-	return nil
+	return nil, true
 }
 
 // Run a string. Used by the sandbox check, never in normal operation.

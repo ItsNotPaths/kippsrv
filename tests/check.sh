@@ -11,15 +11,16 @@ SERVERS=""
 cleanup() { kill $SERVERS 2>/dev/null; rm -rf "/tmp/kippsrv-check.$$"; }
 trap cleanup EXIT
 
-# A kippsrv with XDG folders under $1, so nothing of the session is read.
+# A kippsrv with XDG folders under $1, so nothing of the session is read. The
+# kippbus built here is the one its sources run.
 # Source files go in $1/data/kippsrv/sources.d, the system folder, or
 # $1/config/kippsrv/sources.d, the user's.
 folders() {
 	mkdir -p "$1/run" "$1/config/kippsrv/sources.d" "$1/data/kippsrv/sources.d"
 }
 start() {
-	XDG_RUNTIME_DIR="$1/run" XDG_CONFIG_HOME="$1/config" XDG_DATA_DIRS="$1/data" \
-		./kippsrv 2>"$1/err" &
+	PATH="$PWD:$PATH" XDG_RUNTIME_DIR="$1/run" XDG_CONFIG_HOME="$1/config" \
+		XDG_DATA_DIRS="$1/data" ./kippsrv 2>"$1/err" &
 	SERVERS="$SERVERS $!"
 	sleep 0.4
 }
@@ -102,6 +103,12 @@ function feed(line)
 end
 EOF2
 
+# A file with no request speaks kipp, so its source is sent the line as it is.
+cat > "$SYSTEM/g-pass.lua" <<'EOF2'
+source { name = "pass", takes = "pass/request", retains = "pass/*",
+         exec = [[awk -F'\t' '{ print "retain\tpass/got\t" $3; fflush() }']] }
+EOF2
+
 # A retain outside the source's claim is dropped.
 cat > "$SYSTEM/e-stray.lua" <<'EOF2'
 source { name = "stray", exec = "echo go", retains = {"y/*"} }
@@ -145,6 +152,9 @@ want will       '^retain	x/state	state=offline' 'subscribe	x/*
 want request    '^retain	echo/hi	seen=1'   'subscribe	echo/*
 publish	echo/request	word=hi
 '
+want passthrough '^retain	pass/got	word=hi'  'subscribe	pass/*
+publish	pass/request	word=hi
+'
 want request_refused 'error	badarg	topic=echo/request	msg=word= is missing' 'publish	echo/request
 '
 want no_verb    'error	badverb	verb=TAG'      'TAG	9
@@ -171,126 +181,106 @@ said outside_claim   'source "stray" retained "z/1", outside its claim'
 want_none stray_dropped '^retain	z/'        'subscribe	*
 '
 
-# D-Bus needs a live session bus and busctl. Missing either is a skip.
+# D-Bus needs a live session bus and busctl. Missing either is a skip. Each
+# server owns a test name, never the real one: taking that stops whatever
+# holds it, which is not a thing a test does.
 if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-	D=$TOP/dbus
-	folders "$D"
-	{ echo "source { name = \"test\", retains = \"*\",
-         dbus = {\"type='signal',interface='org.kippsrv.Test'\"} }"
-	  cat tests/lua/dbus_echo.lua; } > "$D/data/kippsrv/sources.d/test.lua"
-	start "$D"
-	DSOCK=$D/run/kippsrv.sock
-	{ printf 'connect\tcheck\nsubscribe\t*\n'; sleep 3; } | timeout 3 socat - UNIX-CONNECT:"$DSOCK" \
-		> /tmp/kippsrv-dbus.$$.out 2>/dev/null &
-	sleep 0.4
-	busctl --user emit /x org.kippsrv.Test Sig "sa{sv}" hello 2 k1 s v1 k2 i 42 >/dev/null 2>&1
-	sleep 1.5
-	# a variant is collapsed the way busctl collapses it, so one adapter
-	# works whether a fact was polled or pushed
-	if grep -q 's=hello	k1=v1	k2=42' /tmp/kippsrv-dbus.$$.out 2>/dev/null; then
-		echo "ok    dbus signal converted"
-	else
-		echo "FAIL  dbus signal not converted"
-		FAILS=$((FAILS + 1))
-	fi
-	rm -f /tmp/kippsrv-dbus.$$.out
-else
-	echo "skip  dbus (no busctl or no session bus)"
-fi
-
-# The watcher owns a test name, never the real one. Taking
-# org.kde.StatusNotifierWatcher stops whatever holds it, which is not a thing
-# a test does.
-if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-	W=$TOP/watcher
-	WNAME=org.kippsrv.CheckWatcher.p$$
-	folders "$W"
-	adapter tray-snw.lua "source { name = \"watcher\", watcher = true, bus_name = \"$WNAME\",
-         retains = \"tray/*\" }" > "$W/data/kippsrv/sources.d/tray-snw.lua"
-	start "$W"
-	WSOCK=$W/run/kippsrv.sock
-	busctl --user call "$WNAME" /StatusNotifierWatcher \
-		org.kde.StatusNotifierWatcher RegisterStatusNotifierItem s org.test.Item \
-		>/dev/null 2>&1
-	got=$(busctl --user get-property "$WNAME" /StatusNotifierWatcher \
-		org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null)
-	tray=$(grep -c '^retain	tray/' "$W/run/kippsrv.state" 2>/dev/null || echo 0)
-	if printf '%s' "$got" | grep -q 'org.test.Item'; then
-		echo "ok    watcher owns a name and registers an item"
-	else
-		echo "FAIL  watcher did not register ($got)"
-		FAILS=$((FAILS + 1))
-	fi
-	if [ "$tray" -ge 1 ]; then
-		echo "ok    the tray kind is named in Lua, not in the core"
-	else
-		echo "FAIL  no tray fact reached the store"
-		FAILS=$((FAILS + 1))
-	fi
-else
-	echo "skip  watcher (no busctl or no session bus)"
-fi
-
-# The notification server owns a test name, never org.freedesktop.Notifications.
-# Taking that one stops whatever holds it, which is not a thing a test does.
-if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-	N=$TOP/notify
-	NNAME=org.kippsrv.CheckNotify.p$$
+	B=$TOP/bus
+	folders "$B"
+	SOURCES=$B/data/kippsrv/sources.d
+	TRAY=org.kippsrv.CheckTray.p$$
+	NOTIFY=org.kippsrv.CheckNotify.p$$
 	NPATH=/org/freedesktop/Notifications
 	NIFACE=org.freedesktop.Notifications
-	folders "$N"
-	# The tray loads first on purpose: files load in name order. Every D-Bus
-	# source is offered the servers' state, and a notification must still
-	# reach only its own adapter.
-	adapter tray-snw.lua "source { name = \"tray\", watcher = true, bus_name = \"$NNAME.w\",
-         retains = \"tray/*\" }" > "$N/data/kippsrv/sources.d/a-tray.lua"
-	adapter notify-fdo.lua "source { name = \"notify\", notify = true, bus_name = \"$NNAME\",
-         retains = \"notif/*\" }" > "$N/data/kippsrv/sources.d/b-notify.lua"
-	start "$N"
-	NSTATE=$N/run/kippsrv.state
+
+	# A request answered with a call line reaches the bus. This one registers
+	# an item with the tray below, so the tray's fact shows the call arrived.
+	{ cat <<EOF2
+source { name = "match", retains = "sig/*", takes = "sig/request",
+         exec = [[kippbus match "type='signal',interface='org.kippsrv.Test'"]] }
+function request(m)
+	return "call\t$TRAY\t/StatusNotifierWatcher\torg.kde.StatusNotifierWatcher\t" ..
+	       "RegisterStatusNotifierItem\ts\torg.test.Called\n"
+end
+EOF2
+	  cat tests/lua/dbus_echo.lua; } > "$SOURCES/match.lua"
+	adapter tray-snw.lua "source { name = \"tray\", exec = \"kippbus tray $TRAY\",
+         retains = \"tray/*\", takes = \"tray/request\" }" > "$SOURCES/tray-snw.lua"
+	adapter notify-fdo.lua "source { name = \"notify\", exec = \"kippbus notify $NOTIFY\",
+         retains = \"notif/*\", takes = \"notif/request\" }" > "$SOURCES/notify-fdo.lua"
+	start "$B"
+	SOCK=$B/run/kippsrv.sock
+	STATE=$B/run/kippsrv.state
+
+	busctl --user emit /x org.kippsrv.Test Sig "sa{sv}" hello 2 k1 s v1 k2 i 42 >/dev/null 2>&1
+	sleep 0.4
+	# a variant is collapsed the way busctl collapses it, so one adapter
+	# works whether a fact was polled or pushed
+	if grep -q 's=hello	k1=v1	k2=42' "$STATE"; then
+		echo "ok    a signal reaches the adapter as busctl's JSON"
+	else
+		echo "FAIL  the signal did not reach the adapter"
+		FAILS=$((FAILS + 1))
+	fi
+
+	busctl --user call "$TRAY" /StatusNotifierWatcher \
+		org.kde.StatusNotifierWatcher RegisterStatusNotifierItem s org.test.Item \
+		>/dev/null 2>&1
+	got=$(busctl --user get-property "$TRAY" /StatusNotifierWatcher \
+		org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null)
+	if printf '%s' "$got" | grep -q 'org.test.Item' &&
+	   grep -q '^retain	tray/org.test.Item/StatusNotifierItem	state=registered' "$STATE"; then
+		echo "ok    the tray owns a name and an item becomes a fact"
+	else
+		echo "FAIL  the tray did not register ($got)"
+		FAILS=$((FAILS + 1))
+	fi
+
+	ask 'publish	sig/request
+' >/dev/null
+	sleep 0.4
+	if grep -q '^retain	tray/org.test.Called/' "$STATE"; then
+		echo "ok    a call line reaches the bus"
+	else
+		echo "FAIL  the call line did not reach the bus"
+		FAILS=$((FAILS + 1))
+	fi
 
 	# The reply is the id, and the id is what everything else names.
-	id=$(busctl --user call "$NNAME" "$NPATH" "$NIFACE" Notify \
+	id=$(busctl --user call "$NOTIFY" "$NPATH" "$NIFACE" Notify \
 		'susssasa{sv}i' grim 0 camera "Screenshot saved" body 0 1 urgency y 2 0 \
 		2>/dev/null | awk '{print $2}')
 	sleep 0.4
-	line=$(grep '^retain	notif/' "$NSTATE" 2>/dev/null | head -1)
-
-	if [ "$id" = "1" ]; then
-		echo "ok    Notify answers with an id"
+	line=$(grep '^retain	notif/' "$STATE" | head -1)
+	if [ "$id" = "1" ] && printf '%s' "$line" | grep -q 'app=grim.*urgency=critical'; then
+		echo "ok    Notify answers with an id, and a hint reaches the fact"
 	else
-		echo "FAIL  Notify did not answer with an id ($id)"
-		FAILS=$((FAILS + 1))
-	fi
-	if printf '%s' "$line" | grep -q 'app=grim' &&
-	   printf '%s' "$line" | grep -q 'urgency=critical'; then
-		echo "ok    the notif kind is named in Lua, and a hint reaches it"
-	else
-		echo "FAIL  no usable notif fact reached the store ($line)"
+		echo "FAIL  no usable notif fact ($id, $line)"
 		FAILS=$((FAILS + 1))
 	fi
 
-	busctl --user call "$NNAME" "$NPATH" \
-		place.paths.kippsrv.Notifications MarkAllRead >/dev/null 2>&1
+	ask 'publish	notif/request	action=read
+' >/dev/null
 	sleep 0.4
-	if grep '^retain	notif/' "$NSTATE" 2>/dev/null | grep -q 'read=1'; then
-		echo "ok    a notification can be marked read"
+	if grep '^retain	notif/' "$STATE" | grep -q 'read=1'; then
+		echo "ok    a request reaches kippbus as kipp"
 	else
-		echo "FAIL  MarkAllRead left nothing read"
+		echo "FAIL  action=read left nothing read"
 		FAILS=$((FAILS + 1))
 	fi
 
-	busctl --user call "$NNAME" "$NPATH" "$NIFACE" \
+	busctl --user call "$NOTIFY" "$NPATH" "$NIFACE" \
 		CloseNotification u "${id:-1}" >/dev/null 2>&1
 	sleep 0.4
-	if ! grep -q '^retain	notif/' "$NSTATE" 2>/dev/null; then
+	if ! grep -q '^retain	notif/' "$STATE"; then
 		echo "ok    closing one drops its fact"
 	else
 		echo "FAIL  the closed notification is still a fact"
 		FAILS=$((FAILS + 1))
 	fi
+	SOCK=$TOP/run/kippsrv.sock
 else
-	echo "skip  notify (no busctl or no session bus)"
+	echo "skip  bus (no busctl or no session bus)"
 fi
 
 if [ -s "$TOP/run/kippsrv.state" ]; then

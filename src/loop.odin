@@ -56,7 +56,6 @@ run :: proc(l: ^Loop) {
 		publish(l, src_tick(l.src, now_ms()))
 		src_settle(l.src)
 		publish(l, src_status(l.src))
-		publish(l, watcher_facts(l.src))
 		srv_wills(l.srv)
 		store_project(l.store)
 		srv_flush(l.srv)

@@ -1,45 +1,48 @@
--- (hole bus-adapters) reads sd-bus JSON inside kippsrv; v2 reads kippbus match.
 -- MPRIS. One file, two ways in: a poll of `busctl ... GetAll`, or a live
--- PropertiesChanged signal. kippsrv gives both the JSON busctl prints, so
--- neither needs its own adapter.
+-- PropertiesChanged signal from kippbus match. Both arrive as the JSON busctl
+-- prints, so neither needs its own adapter.
 --
 -- Every D-Bus value arrives wrapped as {type=..., data=...}. Unwrapping is
 -- most of this file, and that wrapping is exactly what kipp does not have.
-local function v(x)
-	return x and x.data
+source { name = "media", retains = "media/*",
+         exec = [[kippbus match "type='signal',interface='org.freedesktop.DBus.Properties',]] ..
+                [[member='PropertiesChanged',path='/org/mpris/MediaPlayer2'"]] }
+
+local function value(wrapped)
+	return wrapped and wrapped.data
 end
 
 -- A signal carries only what changed, so the rest is remembered. One table
 -- per player: two players sharing one would each overwrite the other.
-local last = {}
+local players = {}
 
-local function publish(props, sender)
-	local meta = v(props.Metadata)
-	local who = sender
+local function publish(properties, sender)
+	local metadata = value(properties.Metadata)
+	local player_name = sender
 
-	if meta then
-		local id = v(meta["mpris:trackid"]) or ""
-		who = id:match("^/[%a]+/(%a+)/") or who
+	if metadata then
+		local track = value(metadata["mpris:trackid"]) or ""
+		player_name = track:match("^/[%a]+/(%a+)/") or player_name
 	end
-	if not who then return end
+	if not player_name then return end
 
-	local p = last[who] or {}
-	last[who] = p
+	local player = players[player_name] or {}
+	players[player_name] = player
 
-	if meta then
-		p.title  = v(meta["xesam:title"]) or p.title
-		local a = v(meta["xesam:artist"])
-		p.artist = (a and a[1]) or p.artist
-		p.length = math.floor((v(meta["mpris:length"]) or 0) / 1000000)
+	if metadata then
+		player.title  = value(metadata["xesam:title"]) or player.title
+		local artists = value(metadata["xesam:artist"])
+		player.artist = (artists and artists[1]) or player.artist
+		player.length = math.floor((value(metadata["mpris:length"]) or 0) / 1000000)
 	end
-	p.status = v(props.PlaybackStatus) or p.status
-	if not p.status then return end
+	player.status = value(properties.PlaybackStatus) or player.status
+	if not player.status then return end
 
-	k.emit("media", who,
-	       "status=" .. p.status,
-	       "title="  .. (p.title or ""),
-	       "artist=" .. (p.artist or ""),
-	       "length=" .. (p.length or 0))
+	k.retain("media/" .. player_name,
+	         "status=" .. player.status,
+	         "title="  .. (player.title or ""),
+	         "artist=" .. (player.artist or ""),
+	         "length=" .. (player.length or 0))
 
 	-- Position is deliberately not published. It moves every poll, so it
 	-- would defeat the store and wake every consumer for nothing. A value
@@ -47,15 +50,16 @@ local function publish(props, sender)
 end
 
 function feed(line)
-	local msg = k.json(line)
-	if not msg then return end
+	local message = k.json(line)
+	if not message then return end
 
-	if msg.member == "PropertiesChanged" then
-		local body = msg.body
-		local iface = body and body[1] and body[1].data
-		if iface ~= "org.mpris.MediaPlayer2.Player" then return end
-		publish(v(body[2]) or {}, msg.sender)
-	elseif msg.data then
-		publish(msg.data[1] or {}, "player")   -- a GetAll poll
+	if message.member == "PropertiesChanged" then
+		local body = message.body
+		local interface = body and body[1] and body[1].data
+		if interface ~= "org.mpris.MediaPlayer2.Player" then return end
+		publish(value(body[2]) or {}, message.sender)
+	elseif message.data then
+		-- (hole media-seed :tags lua :sev gap) no source polls GetAll, so a player already playing shows nothing until it changes.
+		publish(message.data[1] or {}, "player")
 	end
 end

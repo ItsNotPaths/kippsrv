@@ -1,157 +1,160 @@
--- (hole bus-adapters :tags lua :needs (kippbus-match)) reads sd-bus JSON inside kippsrv; v2 reads kippbus match.
 -- bluez, on the system bus. Two ways in, like every D-Bus adapter here: a
 -- GetManagedObjects poll for what is true now, and InterfacesAdded,
--- InterfacesRemoved and PropertiesChanged for what changes after.
+-- InterfacesRemoved and PropertiesChanged from kippbus match for what changes
+-- after. Requests go back out as call lines on the stream's stdin.
 --
 -- A device is one object path, and everything about it arrives in pieces:
 -- the name with the device, the battery when it connects, one property at a
 -- time after that. The record is kept here and the whole fact is republished.
--- The stream is first on purpose: a command is answered by the first source
--- that names it, which has to be the one holding a bus. The seed reads what is
--- paired now; the stream carries every connect, battery and scan result after.
 local claim = {"bt/*", "bt_radio/*"}
-source { name = "bt", system = true, retains = claim, takes = "bt/request",
-         dbus = {"type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager'",
-                 "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties'"} }
+source { name = "bt", retains = claim, takes = "bt/request",
+         exec = [[kippbus match --system ]] ..
+                [["type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager'" ]] ..
+                [["type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties'"]] }
 source { name = "bt-seed", retains = claim,
          exec = "busctl --system --json=short call org.bluez / " ..
                 "org.freedesktop.DBus.ObjectManager GetManagedObjects" }
 
-local BLUEZ  = "org.bluez"
-local DEVICE = "org.bluez.Device1"
-local RADIO  = "org.bluez.Adapter1"
-local BATT   = "org.bluez.Battery1"
+local BLUEZ   = "org.bluez"
+local DEVICE  = "org.bluez.Device1"
+local RADIO   = "org.bluez.Adapter1"
+local BATTERY = "org.bluez.Battery1"
 
--- kippsrv wraps every value as {type=, data=}, and busctl leaves a nested
+-- kippbus wraps every value as {type=, data=}, and busctl leaves a nested
 -- container bare. One unwrap reads both.
-local function v(x)
-	if type(x) == "table" and type(x.type) == "string" then return x.data end
-	return x
+local function value(wrapped)
+	if type(wrapped) == "table" and type(wrapped.type) == "string" then return wrapped.data end
+	return wrapped
 end
 
-local dev, radio = {}, {}
-local by_addr = {}                     -- address -> object path, for a command
-
-local function mac(path)
-	local m = path:match("/dev_([%x_]+)$")
-	return m and (m:gsub("_", ":"))
+-- A line for kippbus match: tab-separated, like kipp.
+local function call(path, interface, member, signature, ...)
+	return table.concat({"call", BLUEZ, path, interface, member, signature or "", ...}, "\t") .. "\n"
 end
 
-local function hci(path)
+local devices, radios = {}, {}
+local path_of_address = {}            -- for a request, which names the address
+
+local function address_of(path)
+	local address = path:match("/dev_([%x_]+)$")
+	return address and (address:gsub("_", ":"))
+end
+
+local function radio_of(path)
 	return path:match("^/org/bluez/(%w+)")
 end
 
-local function pub_dev(path)
-	local d = dev[path]
-	if not d then return end
+local function publish_device(path)
+	local device = devices[path]
+	if not device then return end
 
-	local state = d.connected and "connected" or (d.paired and "paired" or "seen")
-	k.emit("bt", d.addr,
-	       "name="    .. (d.name or ""),
-	       "icon="    .. (d.icon or ""),
-	       "state="   .. state,
-	       "battery=" .. (d.battery or ""),
-	       "radio="   .. (d.radio or ""))
+	local state = device.connected and "connected" or (device.paired and "paired" or "seen")
+	k.retain("bt/" .. device.address,
+	         "name="    .. (device.name or ""),
+	         "icon="    .. (device.icon or ""),
+	         "state="   .. state,
+	         "battery=" .. (device.battery or ""),
+	         "radio="   .. (device.radio or ""))
 end
 
-local function pub_radio(path)
-	local r = radio[path]
-	if not r then return end
+local function publish_radio(path)
+	local radio = radios[path]
+	if not radio then return end
 
 	local state = "off"
-	if r.powered then state = r.discovering and "scanning" or "on" end
-	k.emit("bt_radio", r.id,
-	       "name="    .. (r.name or ""),
-	       "address=" .. (r.address or ""),
-	       "state="   .. state)
+	if radio.powered then state = radio.discovering and "scanning" or "on" end
+	k.retain("bt_radio/" .. radio.id,
+	         "name="    .. (radio.name or ""),
+	         "address=" .. (radio.address or ""),
+	         "state="   .. state)
 end
 
 -- Properties of one interface of one object, however they arrived.
-local function take(path, iface, props)
-	if iface == DEVICE then
-		local addr = mac(path)
-		if not addr then return end
+local function take(path, interface, properties)
+	if interface == DEVICE then
+		local address = address_of(path)
+		if not address then return end
 
-		local d = dev[path] or {addr = addr, radio = hci(path)}
-		dev[path], by_addr[addr] = d, path
+		local device = devices[path] or {address = address, radio = radio_of(path)}
+		devices[path], path_of_address[address] = device, path
 
-		d.name = v(props.Alias) or v(props.Name) or d.name
-		d.icon = v(props.Icon) or d.icon
-		if props.Connected then d.connected = v(props.Connected) end
-		if props.Paired    then d.paired    = v(props.Paired)    end
-		pub_dev(path)
+		device.name = value(properties.Alias) or value(properties.Name) or device.name
+		device.icon = value(properties.Icon) or device.icon
+		if properties.Connected then device.connected = value(properties.Connected) end
+		if properties.Paired    then device.paired    = value(properties.Paired)    end
+		publish_device(path)
 
-	elseif iface == BATT then
-		local d = dev[path]
-		if not d then return end
-		d.battery = v(props.Percentage) or d.battery
-		pub_dev(path)
+	elseif interface == BATTERY then
+		local device = devices[path]
+		if not device then return end
+		device.battery = value(properties.Percentage) or device.battery
+		publish_device(path)
 
-	elseif iface == RADIO then
-		local r = radio[path] or {id = hci(path)}
-		radio[path] = r
+	elseif interface == RADIO then
+		local radio = radios[path] or {id = radio_of(path)}
+		radios[path] = radio
 
-		r.name    = v(props.Alias) or v(props.Name) or r.name
-		r.address = v(props.Address) or r.address
-		if props.Powered     then r.powered     = v(props.Powered)     end
-		if props.Discovering then r.discovering = v(props.Discovering) end
-		pub_radio(path)
+		radio.name    = value(properties.Alias) or value(properties.Name) or radio.name
+		radio.address = value(properties.Address) or radio.address
+		if properties.Powered     then radio.powered     = value(properties.Powered)     end
+		if properties.Discovering then radio.discovering = value(properties.Discovering) end
+		publish_radio(path)
 	end
 end
 
 -- An interface left. Battery1 goes when a headphone disconnects, and the
 -- device itself goes when bluez forgets an unpaired one it stopped seeing.
-local function gone(path, iface)
-	local d = dev[path]
+local function gone(path, interface)
+	local device = devices[path]
 
-	if iface == DEVICE and d then
-		k.drop("bt", d.addr)
-		by_addr[d.addr], dev[path] = nil, nil
-	elseif iface == BATT and d then
-		d.battery = nil
-		pub_dev(path)
-	elseif iface == RADIO and radio[path] then
-		k.drop("bt_radio", radio[path].id)
-		radio[path] = nil
+	if interface == DEVICE and device then
+		k.retain("bt/" .. device.address)
+		path_of_address[device.address], devices[path] = nil, nil
+	elseif interface == BATTERY and device then
+		device.battery = nil
+		publish_device(path)
+	elseif interface == RADIO and radios[path] then
+		k.retain("bt_radio/" .. radios[path].id)
+		radios[path] = nil
 	end
 end
 
-local on_device = {
+local device_members = {
 	connect    = "Connect",
 	disconnect = "Disconnect",
 	pair       = "Pair",
 }
 
 local function radio_path(id)
-	for path, r in pairs(radio) do
-		if not id or r.id == id then return path end
+	for path, radio in pairs(radios) do
+		if not id or radio.id == id then return path end
 	end
 end
 
 function feed(line)
-	local m = k.json(line)
-	if not m then return end
-	local body = m.body
+	local message = k.json(line)
+	if not message then return end
+	local body = message.body
 
-	if m.member == "InterfacesAdded" then
-		local path = v(body[1])
-		for iface, props in pairs(v(body[2]) or {}) do
-			take(path, iface, v(props))
+	if message.member == "InterfacesAdded" then
+		local path = value(body[1])
+		for interface, properties in pairs(value(body[2]) or {}) do
+			take(path, interface, value(properties))
 		end
 
-	elseif m.member == "InterfacesRemoved" then
-		local path = v(body[1])
-		for _, iface in ipairs(v(body[2]) or {}) do
-			gone(path, v(iface))
+	elseif message.member == "InterfacesRemoved" then
+		local path = value(body[1])
+		for _, interface in ipairs(value(body[2]) or {}) do
+			gone(path, value(interface))
 		end
 
-	elseif m.member == "PropertiesChanged" then
-		take(m.path, v(body[1]), v(body[2]) or {})
+	elseif message.member == "PropertiesChanged" then
+		take(message.path, value(body[1]), value(body[2]) or {})
 
-	elseif m.data then                    -- a GetManagedObjects poll
-		for path, ifaces in pairs(m.data[1] or {}) do
-			for iface, props in pairs(v(ifaces)) do
-				take(path, iface, v(props))
+	elseif message.data then                  -- a GetManagedObjects poll
+		for path, interfaces in pairs(message.data[1] or {}) do
+			for interface, properties in pairs(value(interfaces)) do
+				take(path, interface, value(properties))
 			end
 		end
 	end
@@ -160,40 +163,37 @@ end
 -- publish bt/request action=connect|disconnect|pair|forget addr=<address>
 -- publish bt/request action=scan state=on|off [radio=<id>]
 -- The address is as it is on the wire. bluez holds the paths.
-function request(m)
-	local action = m.payload.action or ""
-	local addr = (m.payload.addr or ""):upper()
+function request(message)
+	local action = message.payload.action or ""
+	local address = (message.payload.addr or ""):upper()
 
-	local member = on_device[action]
+	local member = device_members[action]
 	if member then
-		local path = by_addr[addr]
+		local path = path_of_address[address]
 		if not path then
 			return nil, "badarg", "no device with that address"
 		end
-		return {dest = BLUEZ, path = path, iface = DEVICE, member = member}
+		return call(path, DEVICE, member)
 	end
 
 	if action == "forget" then
-		local path = by_addr[addr]
+		local path = path_of_address[address]
 		if not path then
 			return nil, "badarg", "no device with that address"
 		end
-		return {dest = BLUEZ, path = radio_path(dev[path].radio),
-		        iface = RADIO, member = "RemoveDevice",
-		        sig = "o", args = {path}}
+		return call(radio_path(devices[path].radio), RADIO, "RemoveDevice", "o", path)
 	end
 
 	if action == "scan" then
-		local on = m.payload.state == "on"
-		if not on and m.payload.state ~= "off" then
+		local on = message.payload.state == "on"
+		if not on and message.payload.state ~= "off" then
 			return nil, "badarg", "scan takes state=on or off"
 		end
-		local path = radio_path(m.payload.radio)
+		local path = radio_path(message.payload.radio)
 		if not path then
 			return nil, "badarg", "no such radio"
 		end
-		return {dest = BLUEZ, path = path, iface = RADIO,
-		        member = on and "StartDiscovery" or "StopDiscovery"}
+		return call(path, RADIO, on and "StartDiscovery" or "StopDiscovery")
 	end
 
 	return nil, "badarg", "unknown action"

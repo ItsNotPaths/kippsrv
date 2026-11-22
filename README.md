@@ -37,11 +37,10 @@ sync       state
 | `src/lua.odin` | the VM, the fence, a seven-function script surface |
 | `src/source.odin` | foreign sources and their framing |
 | `src/store.odin` | current truth: dedup, the dump, the projection |
-| `src/dbus.odin` | D-Bus signals and calls, through sd-bus |
 | `src/command.odin` | the outbound seam: a command, offered to each source |
-| `src/watcher.odin` | owns `org.kde.StatusNotifierWatcher` |
 | `src/config.odin` | the configuration file, which is Lua |
 | `src/main.odin` | load the config, serve, run |
+| `bus/` | kippbus, the one D-Bus program, run by kippsrv as a source |
 
 Thirteen adapters across eight domains in `lua/`. A consumer reads the whole
 desktop off one socket, and drives what only this process can reach.
@@ -85,7 +84,6 @@ poll, so there is no separate polling concept.
 | --- | --- |
 | `exec` | spawn a command, read its output |
 | `sock` | connect to a unix socket |
-| `dbus` | subscribe to a signal, or own a name |
 | `timer` | fire on a period and call `tick` |
 
 A source owns the descriptor **and the framing**, so an adapter always gets a
@@ -124,8 +122,8 @@ PipeWire subscription, and `/sys/class/backlight/*/brightness` is watchable
 with inotify.
 
 A table names the parts, and the defaults are
-`throttle = { idle = 3, factor = 16, ceiling = 60000 }`. A `sock` or `dbus`
-source has no period to stretch, so it is slowed the other way:
+`throttle = { idle = 3, factor = 16, ceiling = 60000 }`. A `sock` or a long-running
+`exec` source has no period to stretch, so it is slowed the other way:
 `throttle = { min_gap = 250 }` calls the adapter at most once per 250 ms,
 holding the newest unit and dropping the ones behind it. Give that only to a
 source whose units restate current truth. A dropped event is gone.
@@ -155,8 +153,8 @@ can grey out a headphone that still exists rather than claim it is gone.
 **The store is a correctness feature, not a performance one.** A repeat costs
 nothing downstream: the socket and every consumer are spared. Upstream it costs
 exactly as much as ever. A poll still pays a fork, an exec, a read and a Lua
-call to find out that nothing moved. Prefer `dbus` or `sock` to `every`
-wherever a source offers one.
+call to find out that nothing moved. Prefer `kippbus match` or `sock` to
+`every` wherever a source offers one.
 
 ## Topics are identities
 
@@ -225,15 +223,15 @@ offered it in configuration order and the first adapter that answers owns it.
 
 | An adapter returns | The core does |
 | --- | --- |
-| nothing | asks the next source |
+| no `request` at all | writes the request line itself to the source |
+| nothing | nothing |
 | a string | writes those bytes to the source's channel |
-| a table | makes that method call on the source's own bus |
 | `nil, code, msg` | sends back that `error` line |
 
 A source that names `cmd` has that path opened for each write. One without it
 answers on the socket it already has. There is no third way out, and an adapter
-sees neither descriptor. `lua/wm/hedl.lua` is the first shape, `lua/tray/snw.lua`
-the second, `src/command.odin` the whole of it.
+sees neither descriptor. `lua/wm/hedl.lua` is the first shape,
+`sources.d/bt-bluez.lua` the second, `src/command.odin` the whole of it.
 
 ```lua
 { name = "wm", adapter = "lua/wm/hedl.lua",
@@ -242,9 +240,7 @@ the second, `src/command.odin` the whole of it.
 
 **The path is narrow on purpose.** Most of what a consumer wants is to run a
 command, and anything can run a command. What is left is where kippsrv holds
-the only descriptor that reaches the thing. The tray is the case with no other
-way: an icon is activated on the connection it registered on, and that
-connection is this process's.
+the only descriptor that reaches the thing.
 
 ## The fence
 
@@ -274,37 +270,50 @@ doing it. The two budgets have their own tests.
 
 ## D-Bus
 
+kippsrv never learns what D-Bus is. `kippbus` is a second binary that holds one
+bus connection, and kippsrv runs it from an ordinary source file like any other
+command: lines out on stdout, requests in on stdin.
+
+```
+kippbus match [--system] <rule>...   each matching signal as JSON
+kippbus tray [<name>]                owns org.kde.StatusNotifierWatcher
+kippbus notify [<name>]              owns org.freedesktop.Notifications
+```
+
+`<name>` owns a different name, for testing beside a live one.
+
+### match
+
 ```lua
-{ name = "media", adapter = "lua/media/mpris.lua",
-  dbus = {"type='signal',interface='org.freedesktop.DBus.Properties'"} },
+source { name = "media", retains = "media/*",
+         exec = [[kippbus match "type='signal',interface='org.freedesktop.DBus.Properties'"]] }
 ```
 
 Match rules are the same strings `busctl` and `dbus-monitor` take. A signal
 reaches the adapter as the JSON `busctl` prints, so one file works whether a
-fact was polled or pushed. `lua/media/mpris.lua` handles both, and the only
-difference is which branch of its `feed` runs.
+fact was polled or pushed. A value of type `v` is collapsed the way busctl does
+it, so an adapter never learns something arrived wrapped.
 
-Getting that right meant collapsing variants the way busctl does. A value of
-type `v` reaches Lua as whatever it holds, so an adapter never learns something
-arrived wrapped.
+A request goes back out as a call line on stdin, which the adapter's `request`
+returns as a string. Fields are tab-separated, as in kipp:
 
-### The watcher
+```
+call <destination> <path> <interface> <member> <signature> <argument>...
+```
 
-`src/watcher.odin` owns `org.kde.StatusNotifierWatcher`. That is the one thing
-`busctl` cannot do for us, and a tray application looks for that name once at
-its own startup, so if nobody owns it no icon ever registers.
+Arguments cross as text and the signature says what each one is. No reply is
+asked for: the facts that follow show what the call did.
 
-It exports two methods, three properties and three signals, tracks what is
-registered, and drops an entry when its application leaves the bus. Its state
-is one table, so there is one watcher, and a second `watcher = true` is refused
-with a message. `bus_name` owns a different name, for testing beside a live
-one.
+### tray and notify
 
-**The kind is named in Lua, not here.** Registrations reach `lua/tray/snw.lua`
-as a JSON line, the same shape a D-Bus source gets, and it decides they are
-`tray` facts. The core knows "items" and "dropped", which are facts about a
-D-Bus interface and no noun of the desktop, so `lint-core` covers this file
-like every other.
+Owning a well-known name is the one thing `busctl` cannot do. A tray
+application looks for the watcher once at its own startup, so if nobody owns
+it no icon ever registers. `notify-send` calls whoever holds the notification
+name, so holding it is the whole of being a daemon.
+
+Both print kipp themselves (`tray/<item>`, `notif/<id>`), and their source files
+have no `feed` and no `request`, so kipp passes through both ways. The requests
+each takes are listed at the top of `bus/tray.odin` and `bus/notify.odin`.
 
 ### sd-bus, not libdbus
 
@@ -314,23 +323,17 @@ dispatch. sd-bus has `sd_bus_add_object_vtable`.
 sd-bus has two implementations, and basu is the same API without systemd:
 
 ```sh
-make            # libsystemd, for a dev machine that has it
-make static     # basu, fetched at a pinned commit and linked in
+make            # kippbus links libsystemd, for a machine that has it
+make static     # kippbus links basu, fetched at a pinned commit
 ```
 
-`make static` leaves a binary needing no D-Bus library at run time, and it is
-the one to package. It is also the only build with no second path waiting to
-fail somewhere else: what you test is what you ship.
+`make static` leaves a kippbus needing no D-Bus library at run time, and it is
+the one to package. kippsrv links neither.
 
 basu is pinned in the Makefile, not copied into this repo. 34k lines of someone
 else's C does not belong in the tree, and a pinned commit gives the same
-reproducibility. Building it needs meson, ninja and gperf.
-
-The dependency is 15 symbols for reading, listed at the top of `src/dbus.odin`,
-two for calling out and ten for owning a name and answering on it. All 27 are
-in basu. Nothing else in kippsrv touches the
-bus, and a source polling `busctl` needs none of it. That is how
-`lua/media/mpris.lua` worked before `dbus.odin` existed.
+reproducibility. Building it needs meson, ninja and gperf. All the symbols
+kippbus uses are listed in `bus/sdbus.odin`, and all are in basu.
 
 The vtable struct is the one place they disagree. libsystemd is 56 bytes and
 carries parameter names and a format reference. basu is 48 and does not.
@@ -415,8 +418,8 @@ this one with no change.
 ## Build
 
 ```sh
-make          # kippsrv
-make static   # with basu linked in
+make          # kippsrv and kippbus
+make static   # kippbus with basu linked in
 make check    # lint, unit tests, then a socat round trip
 make lint     # the four architecture checks alone
 ```

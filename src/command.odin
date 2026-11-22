@@ -21,14 +21,6 @@ Cmd_Bytes :: struct {
 	data: string,
 }
 
-// A method call on the bus the source already holds. Arguments cross as
-// text and `sig` says what each one is, because D-Bus is typed and Lua has
-// one number type.
-Cmd_Call :: struct {
-	dest, path, iface, member, sig: string,
-	args:                           []string,
-}
-
 // The request was wrong.
 Cmd_Fail :: struct {
 	code, msg: string,
@@ -36,7 +28,6 @@ Cmd_Fail :: struct {
 
 Cmd :: union {
 	Cmd_Bytes,
-	Cmd_Call,
 	Cmd_Fail,
 }
 
@@ -53,26 +44,24 @@ cmd_bind :: proc(ss: ^Sources) {
 // the sources that take it.
 deliver :: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD) {
 	broadcast(s, line)
-	request(s, m, fd)
+	request(s, line, m, fd)
 }
 
 // A refusal goes back to the client that sent the request, when one did. A
-// source that cannot be reached is only logged: kipp has no code for it.
-request :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
+// source that cannot be reached is only logged: kipp has no code for it. A
+// file with no `request` speaks kipp, so its source gets the line as it is.
+request :: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD) {
 	if outbound == nil do return
 	for src in outbound.list {
 		if !any_match(src.takes, m.topic) do continue
-		switch v in vm_request(outbound.vm, src.adapter, m, src.name) {
+		cmd, found := vm_request(outbound.vm, src.adapter, m, src.name)
+		if !found do cmd = Cmd_Bytes{fmt.tprintf("%s\n", line)}
+		switch v in cmd {
 		case Cmd_Fail:
 			send_error(s, fd, v.code, fmt.tprintf("topic=%s", m.topic), v.msg)
 		case Cmd_Bytes:
 			if !src_send(src, transmute([]byte)v.data) {
 				fmt.eprintfln("kippsrv: source %q is not listening, a %s request was dropped",
-				              src.name, m.topic)
-			}
-		case Cmd_Call:
-			if !dbus_call(src, v) {
-				fmt.eprintfln("kippsrv: source %q refused the call, a %s request was dropped",
 				              src.name, m.topic)
 			}
 		}

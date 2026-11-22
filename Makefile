@@ -1,18 +1,23 @@
 ODIN ?= odin
 CORE  = $(wildcard src/*.odin)
 
-# sd-bus has two implementations. libsystemd is the default because a systemd
-# machine already has it. `make static` uses basu instead and links it in, so
-# the binary needs no D-Bus library at all. That is the form to package.
+# kippbus links sd-bus, which has two implementations. libsystemd is the
+# default because a systemd machine already has it. `make static` uses basu
+# instead and links it in, so the binary needs no D-Bus library at all. That
+# is the form to package. kippsrv links neither.
 BASU_REPO ?= https://git.sr.ht/~emersion/basu
 BASU_REV  ?= 315664a875ad37bd9cee75af00ab4d1d3edc105e
+
+all: kippsrv kippbus
 
 kippsrv: src/*.odin
 	$(ODIN) build src -out:$@
 
-# (hole drop-sdbus) make static and basu exist only for sd-bus, and go with it.
-static: basu/build/libbasu.a src/*.odin
-	$(ODIN) build src -define:BASU=true -out:kippsrv \
+kippbus: bus/*.odin
+	$(ODIN) build bus -out:$@
+
+static: kippsrv basu/build/libbasu.a bus/*.odin
+	$(ODIN) build bus -define:BASU=true -out:kippbus \
 		-extra-linker-flags:"-L$(CURDIR)/basu/build"
 
 # basu is pinned to a commit and built once. It is not copied into this repo:
@@ -27,7 +32,7 @@ basu/build/libbasu.a:
 		-Daudit=disabled -Dlibcap=disabled
 	ninja -C basu/build libbasu.a
 
-check: kippsrv lint
+check: kippsrv kippbus lint
 	$(ODIN) test tests
 	./tests/check.sh
 
@@ -75,9 +80,9 @@ lint-vocab:
 	@./vocab.sh
 
 clean:
-	rm -f kippsrv
+	rm -f kippsrv kippbus
 
 distclean: clean
 	rm -rf basu
 
-.PHONY: check static lint lint-core lint-fd lint-api lint-vocab clean distclean
+.PHONY: all check static lint lint-core lint-fd lint-api lint-vocab clean distclean

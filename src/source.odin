@@ -1,9 +1,8 @@
-// Foreign sources. Four kinds, none of them a domain.
+// Foreign sources. Three kinds, none of them a domain.
 //
 //   exec   spawn a command and read its output
 //   sock   connect to a unix socket
 //   timer  fire on a period
-//   dbus   subscribe to a signal          (dbus.odin, not here)
 //
 // A source owns the descriptor and cuts its output into lines, so an adapter
 // gets whole lines and never reassembles a torn one.
@@ -18,10 +17,9 @@ Kind :: enum {
 	Exec,
 	Sock,
 	Timer,
-	Dbus,
 }
 
-// (hole source-state :tags sources :sev polish :needs drop-sdbus) the life of a source is spread over done, dead, fails, pid, fd and input; one state enum once the dbus kind is gone.
+// (hole source-state :tags sources :sev polish) the life of a source is spread over done, dead, fails, pid, fd and input; one state enum.
 Source :: struct {
 	id:      int,
 	name:    string,
@@ -49,7 +47,6 @@ Source :: struct {
 	retains: []string,   // its claim, borrowed from the config
 	takes:   []string,   // the requests it takes, borrowed from the config
 	refused: bool,       // a retain outside the claim was reported
-	bus:     ^Bus,       // dbus only
 }
 
 Status :: enum {Unsaid, Online, Offline}
@@ -242,16 +239,6 @@ redial :: proc(s: ^Source) -> bool {
 	return true
 }
 
-// A bus connection. dbus.odin makes the connection; this puts it in the list
-// so it has an id and a lifecycle like everything else.
-src_dbus :: proc(ss: ^Sources, name: string, bus: ^Bus, fd: posix.FD,
-                 adapter: Adapter) -> ^Source {
-	return add(ss, new_clone(Source{
-		name = strings.clone(name), kind = .Dbus, fd = fd,
-		adapter = adapter, bus = bus,
-	}))
-}
-
 // Fire on a period. It carries no data, so the adapter's `tick` runs instead
 // of `feed`.
 src_timer :: proc(ss: ^Sources, name: string, every_ms: i64,
@@ -281,15 +268,7 @@ src_send :: proc(s: ^Source, data: []byte) -> bool {
 
 src_close :: proc(ss: ^Sources) {
 	for s in ss.list {
-		// The bus owns its descriptor, and two sources on one connection --
-		// sd_bus_default_user hands back the same one -- hold the same fd.
-		// Closing it here as well is a second close of a live descriptor, and
-		// basu asserts on the third.
-		if s.kind == .Dbus {
-			dbus_close(s)
-		} else if s.fd >= 0 {
-			posix.close(s.fd)
-		}
+		if s.fd >= 0 do posix.close(s.fd)
 		if s.input >= 0 do posix.close(s.input)
 		if s.pid > 0 do posix.kill(s.pid, .SIGTERM)
 		delete(s.exec)
@@ -408,18 +387,6 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 
 	for s in ss.list {
-		if s.kind == .Dbus && s.fd == fd && !s.done {
-			if !dbus_ready(s, ss.vm, &out) {
-				// The connection dropped. Without this the fd stays
-				// readable and the loop spins.
-				s.done = true
-				s.dead = true
-			}
-			return out[:]
-		}
-	}
-
-	for s in ss.list {
 		if s.fd != fd || s.done do continue
 
 		eof := false
@@ -483,21 +450,6 @@ src_ready :: proc(ss: ^Sources, fd: posix.FD) -> []Emit {
 			if s.every > 0 do s.due = now_ms() + s.every
 		}
 		break
-	}
-	return out[:]
-}
-
-// Run every timer that is due, and start every exec source whose period came
-// round again.
-// What the servers hold, through the adapter of the source that owns each.
-// Both are the same shape: state in Odin, named by Lua, once per pass.
-watcher_facts :: proc(ss: ^Sources) -> []Emit {
-	out := make([dynamic]Emit, context.temp_allocator)
-	for s in ss.list {
-		if s.kind == .Dbus && s.adapter != NO_ADAPTER {
-			watcher_pass(ss.vm, s.adapter, &out, s.id)
-			notify_pass(ss.vm, s.adapter, &out, s.id)
-		}
 	}
 	return out[:]
 }
@@ -582,6 +534,8 @@ src_status :: proc(ss: ^Sources) -> []Emit {
 	return out[:]
 }
 
+// Run every timer that is due, and start every exec source whose period came
+// round again.
 src_tick :: proc(ss: ^Sources, now: i64) -> []Emit {
 	out := make([dynamic]Emit, context.temp_allocator)
 	for s in ss.list {

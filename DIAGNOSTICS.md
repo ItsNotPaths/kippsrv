@@ -65,26 +65,24 @@ Some sources are not being read at all, so whatever they report is missing.
 *This one you can fix.* Remove sources from `config.lua`, or merge several
 polls into one command.
 
-## E-name — the tray name could not be taken
+## E-name — kippbus could not take its name
 
-The tray will stay empty. Nothing else is affected.
+From `kippbus tray` the tray stays empty, and from `kippbus notify` no
+notification reaches the panel. Nothing else is affected.
 
-*This one you can usually fix.* Some other program owns
-`org.kde.StatusNotifierWatcher` — a shell like Quickshell, waybar with its own
-watcher, or a second kippsrv. Stop it, restart kippsrv, then restart every
-application with a tray icon: an application looks for the watcher once, at its
-own startup, and never again.
+*This one you can usually fix.* Some other program owns the name — for the
+tray a shell like Quickshell, waybar with its own watcher, or a second kippbus;
+for notifications dunst, mako or a desktop shell. Stop it and restart kippsrv.
+For the tray, restart every application with a tray icon too: an application
+looks for the watcher once, at its own startup, and never again.
 
-If the message says a name was *refused*, `config.lua` has more than one source
-with `watcher = true`. Only the first starts. Keep one.
-
-## E-bus — a source could not reach D-Bus, or its match was refused
+## E-bus — kippbus could not reach D-Bus, its match was refused, or the bus dropped
 
 Whatever that source reports is missing. Everything else keeps working.
 
 *Usually the environment.* A session bus needs `DBUS_SESSION_BUS_ADDRESS` set,
 which a desktop session normally does. A refused match rule is a bug in the
-rule itself, in `config.lua`.
+rule itself, on the `kippbus match` line of that source file.
 
 ## E-framing — a source and its framing do not agree
 

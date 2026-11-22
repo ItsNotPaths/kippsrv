@@ -23,13 +23,8 @@ Src_Spec :: struct {
 	adapter: Adapter,    // the file that declared it
 	exec:    string,     // a command for sh -c, or
 	sock:    string,     // a path, or
-	dbus:    []string,   // match rules, or
-	system:  bool,       // the system bus instead of the session bus
 	timer:   bool,       // a bare heartbeat
 	throttle: Throttle,  // how often this source may reach its adapter
-	watcher: bool,       // own the StatusNotifierWatcher name on this bus
-	notify:  bool,       // own org.freedesktop.Notifications on this bus
-	bus_name: string,    // a different name, for testing beside a live one
 	every:   i64,        // ms. An exec repeats, a timer fires
 	retains: []string,   // the topic patterns it may retain
 	takes:   []string,   // the topic patterns of the requests it takes
@@ -149,13 +144,8 @@ read_spec :: proc(L: ^lua.State) -> (s: Src_Spec) {
 	s.name, _ = field_str(L, "name")
 	s.sock, _ = field_path(L, "sock")
 	s.exec, _ = field_str(L, "exec")
-	s.dbus = field_list(L, "dbus")
-	s.system = field_bool(L, "system")
 	s.timer = field_bool(L, "timer")
 	s.throttle = field_throttle(L)
-	s.watcher = field_bool(L, "watcher")
-	s.notify = field_bool(L, "notify")
-	s.bus_name, _ = field_str(L, "bus_name")
 	s.every = field_int(L, "every")
 	s.retains = field_list(L, "retains")
 	s.takes = field_list(L, "takes")
@@ -163,9 +153,7 @@ read_spec :: proc(L: ^lua.State) -> (s: Src_Spec) {
 }
 
 spec_free :: proc(s: ^Src_Spec) {
-	delete(s.name); delete(s.exec); delete(s.sock); delete(s.bus_name)
-	for rule in s.dbus do delete(rule)
-	delete(s.dbus)
+	delete(s.name); delete(s.exec); delete(s.sock)
 	for pattern in s.retains do delete(pattern)
 	delete(s.retains)
 	for pattern in s.takes do delete(pattern)
@@ -312,17 +300,6 @@ config_start :: proc(ss: ^Sources, cfg: ^Config) -> int {
 			src, ok = src_exec(ss, spec.name, spec.exec, a, spec.every)
 		case spec.sock != "":
 			src, ok = src_sock(ss, spec.name, spec.sock, a)
-		// (hole drop-sdbus :tags bus :needs (kippbus-match kippbus-tray kippbus-notify)) kippsrv opens D-Bus itself; v2 runs kippbus as an exec source.
-		case len(spec.dbus) > 0 || spec.watcher || spec.notify:
-			src, ok = dbus_open(ss, spec.name, spec.system, spec.dbus, a)
-			if ok && spec.watcher {
-				ok = watcher_start(src, spec.bus_name != "" \
-					? spec.bus_name : WATCHER_NAME)
-			}
-			if ok && spec.notify {
-				ok = notify_start(src, spec.bus_name != "" \
-					? spec.bus_name : NOTIFY_NAME)
-			}
 		case spec.timer:
 			// every defaults to 0, and a source with no period is skipped by
 			// src_timeout, so the timer would simply never fire.
