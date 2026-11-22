@@ -76,10 +76,11 @@ publish :: proc(l: ^Loop, es: []Emit) {
 		if !src_may_retain(l.src, e) do continue
 		line := store_apply(l.store, e)
 		if line == "" do continue
-		broadcast(l.srv, line)
 		if strings.has_prefix(line, "publish\t") {
 			m, _ := parse(line, context.temp_allocator)
-			request(l.srv, &m, -1)
+			deliver(l.srv, line, &m, -1)
+		} else {
+			broadcast(l.srv, line)
 		}
 		src_moved(l.src, e.src)
 	}

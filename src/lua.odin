@@ -83,13 +83,9 @@ on_step :: proc "c" (L: ^lua.State, ar: ^lua.Debug) {
 	if v.budget <= 0 do lua.L_error(L, "script ran too long and was stopped")
 }
 
+@(private = "file")
 vm_of :: proc "contextless" (L: ^lua.State) -> ^Vm {
 	return (^^Vm)(lua.getextraspace(L))^
-}
-
-// Temp-allocated, so it dies with the loop pass like everything else.
-cstr :: proc(s: string) -> cstring {
-	return strings.clone_to_cstring(s, context.temp_allocator)
 }
 
 // ------------------------------------------------------------------- api
@@ -246,6 +242,24 @@ l_parse :: proc "c" (L: ^lua.State) -> c.int {
 	}
 	push_msg(L, &m)
 	return 1
+}
+
+// @api source{name=..., exec=..., retains=...}   declare a source of this file
+@(private = "file")
+l_source :: proc "c" (L: ^lua.State) -> c.int {
+	context = runtime.default_context()
+	if !lua.istable(L, 1) do lua.L_error(L, "source{} takes a table")
+	lua.settop(L, 1)
+
+	s := read_spec(L)
+	v := vm_of(L)
+	if v.declared != nil && s.name != "" {
+		append(v.declared, s)
+		return 0
+	}
+	spec_free(&s)
+	if v.declared != nil do lua.L_error(L, "source{} needs a name")
+	return 0
 }
 
 // @api k.json(text) -> table | nil

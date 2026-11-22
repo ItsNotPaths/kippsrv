@@ -5,7 +5,6 @@
 // defines are the adapter that reads them.
 package kippsrv
 
-import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:os"
@@ -145,13 +144,8 @@ field_throttle :: proc(L: ^lua.State) -> Throttle {
 	return t
 }
 
-// @api source{name=..., exec=..., retains=...}   declare a source of this file
-l_source :: proc "c" (L: ^lua.State) -> c.int {
-	context = runtime.default_context()
-	if !lua.istable(L, 1) do lua.L_error(L, "source{} takes a table")
-	lua.settop(L, 1)
-
-	s: Src_Spec
+// The source{} table at the top of the stack.
+read_spec :: proc(L: ^lua.State) -> (s: Src_Spec) {
 	s.name, _ = field_str(L, "name")
 	s.sock, _ = field_path(L, "sock")
 	s.exec, _ = field_str(L, "exec")
@@ -165,18 +159,9 @@ l_source :: proc "c" (L: ^lua.State) -> c.int {
 	s.every = field_int(L, "every")
 	s.retains = field_list(L, "retains")
 	s.takes = field_list(L, "takes")
-
-	v := vm_of(L)
-	if v.declared != nil && s.name != "" {
-		append(v.declared, s)
-		return 0
-	}
-	spec_free(&s)
-	if v.declared != nil do lua.L_error(L, "source{} needs a name")
-	return 0
+	return s
 }
 
-@(private = "file")
 spec_free :: proc(s: ^Src_Spec) {
 	delete(s.name); delete(s.exec); delete(s.sock); delete(s.bus_name)
 	for rule in s.dbus do delete(rule)
@@ -251,6 +236,17 @@ overlap :: proc(ours, theirs: []string) -> (string, string, bool) {
 	return "", "", false
 }
 
+// The first pattern of a source that is not one, or "". The status line
+// carries a claim as one comma-joined field, so a claim holds no comma.
+@(private = "file")
+bad_pattern :: proc(s: Src_Spec) -> string {
+	for pattern in s.retains {
+		if !is_pattern(pattern) || strings.contains_rune(pattern, ',') do return pattern
+	}
+	for pattern in s.takes do if !is_pattern(pattern) do return pattern
+	return ""
+}
+
 // A file's sources are kept whole or not at all. A name already taken, or a
 // claim that overlaps another file's, refuses the file.
 @(private = "file")
@@ -267,13 +263,7 @@ load_file :: proc(v: ^Vm, cfg: ^Config, path: string) {
 
 	reason := ""
 	for s, i in declared {
-		// The status line carries a claim as one comma-joined field.
-		for pattern in s.retains {
-			if !is_pattern(pattern) || strings.contains_rune(pattern, ',') {
-				reason = fmt.tprintf("%q is not a pattern", pattern)
-			}
-		}
-		for pattern in s.takes do if !is_pattern(pattern) do reason = fmt.tprintf("%q is not a pattern", pattern)
+		if bad := bad_pattern(s); bad != "" do reason = fmt.tprintf("%q is not a pattern", bad)
 		for earlier in declared[:i] {
 			if earlier.name == s.name do reason = fmt.tprintf("it names %q twice", s.name)
 		}

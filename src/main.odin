@@ -7,21 +7,6 @@ import "core:os"
 import "core:sys/linux"
 import "core:sys/posix"
 
-// The dump is the store's lines the pattern matches, in the order facts were
-// first seen.
-store: Store
-
-dump :: proc(s: ^Server, fd: posix.FD, pattern: string) {
-	lines := make([dynamic]string, context.temp_allocator)
-	store_each(&store, &lines)
-	for line in lines do if matches(pattern, topic_of(line)) do send_to(s, fd, line)
-}
-
-// A client's retain, already inside its claim.
-retain :: proc(s: ^Server, line: string) {
-	if moved := store_apply(&store, Emit{line, 0}); moved != "" do broadcast(s, moved)
-}
-
 @(private = "file")
 the_loop: ^Loop
 
@@ -56,9 +41,9 @@ main :: proc() {
 		os.exit(1)
 	}
 	defer stop(srv)
-	srv.on_dump = dump
-	srv.on_retain = retain
-	srv.on_publish = request
+	srv.on_dump = store_dump
+	srv.on_retain = store_retain
+	srv.on_publish = deliver
 	for spec in cfg.sources do srv.claims[spec.name] = spec.retains
 
 	ss := Sources{vm = v}

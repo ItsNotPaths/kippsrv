@@ -85,6 +85,11 @@ is_word :: proc(s: string) -> bool {
 	return len(s) > 0 && !number
 }
 
+// Temp-allocated, so it dies with the loop pass like everything else.
+cstr :: proc(s: string) -> cstring {
+	return strings.clone_to_cstring(s, context.temp_allocator)
+}
+
 // --------------------------------------------------------------- building
 
 Out :: struct {
@@ -225,7 +230,7 @@ Server :: struct {
 	wills:   [dynamic]string,       // of connections that ended, not yet acted on
 	on_dump: proc(s: ^Server, fd: posix.FD, pattern: string),
 	on_retain:  proc(s: ^Server, line: string),
-	on_publish: proc(s: ^Server, m: ^Msg, fd: posix.FD),
+	on_publish: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD),
 }
 
 @(private = "file")
@@ -521,15 +526,13 @@ refused :: proc(s: ^Server, fd: posix.FD, c: ^Conn, m: ^Msg) -> bool {
 	return true
 }
 
-// A retain goes to the store, a publish to its subscribers and its takers.
 @(private = "file")
 act :: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD) {
 	if m.verb == "retain" {
 		if s.on_retain != nil do s.on_retain(s, line)
-		return
+	} else if s.on_publish != nil {
+		s.on_publish(s, line, m, fd)
 	}
-	broadcast(s, line)
-	if s.on_publish != nil do s.on_publish(s, m, fd)
 }
 
 // Checked now, so the error reaches a client that can still read it.
@@ -544,6 +547,26 @@ will :: proc(s: ^Server, fd: posix.FD, c: ^Conn, line: string) {
 	if refused(s, fd, c, &m) do return
 	delete(c.will)
 	c.will = strings.clone(rest)
+}
+
+// One whole line from a client.
+@(private = "file")
+obey :: proc(s: ^Server, fd: posix.FD, c: ^Conn, text: string) {
+	m, _ := parse(text, context.temp_allocator)
+	if c.name == "" && m.verb != "connect" {
+		send_error(s, fd, "noconnect", "", "send connect first")
+		return
+	}
+	switch m.verb {
+	case "connect":     connect(s, fd, m.topic)
+	case "subscribe":   subscribe(s, fd, c, m.topic)
+	case "unsubscribe": unsubscribe(c, m.topic)
+	case "will":        will(s, fd, c, text)
+	case "retain", "publish":
+		if !refused(s, fd, c, &m) do act(s, text, &m, fd)
+	case:
+		send_error(s, fd, "badverb", fmt.tprintf("verb=%s", m.verb), "unknown verb")
+	}
 }
 
 // By fd, not by index, for the same reason srv_ready is. Sending an error can
@@ -575,23 +598,7 @@ read_conn :: proc(s: ^Server, fd: posix.FD) {
 			case .Data: continue
 			}
 		case .Line:
-			text := string(line[:n])
-			m, _ := parse(text, context.temp_allocator)
-			if s.conns[i].name == "" && m.verb != "connect" {
-				send_error(s, fd, "noconnect", "", "send connect first")
-				continue
-			}
-			switch m.verb {
-			case "connect":     connect(s, fd, m.topic)
-			case "subscribe":   subscribe(s, fd, &s.conns[i], m.topic)
-			case "unsubscribe": unsubscribe(&s.conns[i], m.topic)
-			case "will":        will(s, fd, &s.conns[i], text)
-			case "retain", "publish":
-				if !refused(s, fd, &s.conns[i], &m) do act(s, text, &m, fd)
-			case:
-				send_error(s, fd, "badverb", fmt.tprintf("verb=%s", m.verb),
-				           "unknown verb")
-			}
+			obey(s, fd, &s.conns[i], string(line[:n]))
 		}
 	}
 }

@@ -330,6 +330,7 @@ a_second_connect_closes_the_first :: proc(t: ^testing.T) {
 	s, ok := serve(path, "version\t2\tbroker=test")
 	if !testing.expect(t, ok) do return
 	defer stop(s)
+	s.on_publish = deliver
 
 	dial :: proc(path: string) -> posix.FD {
 		addr: posix.sockaddr_un

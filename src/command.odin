@@ -49,6 +49,13 @@ cmd_bind :: proc(ss: ^Sources) {
 	outbound = ss
 }
 
+// A publish, from a client, a will or a source: to its subscribers, then to
+// the sources that take it.
+deliver :: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD) {
+	broadcast(s, line)
+	request(s, m, fd)
+}
+
 // A refusal goes back to the client that sent the request, when one did. A
 // source that cannot be reached is only logged: kipp has no code for it.
 request :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {

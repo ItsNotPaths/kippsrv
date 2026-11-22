@@ -7,6 +7,7 @@ package kippsrv
 
 import "core:fmt"
 import "core:strings"
+import "core:sys/posix"
 
 // An adapter that keys on something unbounded would otherwise grow the store
 // until the daemon is killed. vocab/wm.txt warns against it; this bounds it.
@@ -20,6 +21,21 @@ Store :: struct {
 	dirty: bool,
 	full:  bool,                // the cap was reported once
 	wrote: i64,                 // when the projection last landed
+}
+
+// The one store, which the server's callbacks below answer from.
+store: Store
+
+// The dump: the lines the pattern matches, in the order facts were first seen.
+store_dump :: proc(s: ^Server, fd: posix.FD, pattern: string) {
+	lines := make([dynamic]string, context.temp_allocator)
+	store_each(&store, &lines)
+	for line in lines do if matches(pattern, topic_of(line)) do send_to(s, fd, line)
+}
+
+// A client's retain, already inside its claim.
+store_retain :: proc(s: ^Server, line: string) {
+	if moved := store_apply(&store, Emit{line, 0}); moved != "" do broadcast(s, moved)
 }
 
 store_close :: proc(st: ^Store) {
