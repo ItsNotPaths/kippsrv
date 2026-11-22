@@ -435,7 +435,7 @@ nearest :: proc(best: ^i64, due, now: i64) {
 @(private = "file")
 emit_into :: proc(out: ^[dynamic]Emit, es: []Emit, src: int) {
 	for e in es {
-		append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, src})
+		append(out, Emit{strings.clone(e.line, context.temp_allocator), src})
 	}
 }
 

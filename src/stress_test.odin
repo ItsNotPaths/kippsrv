@@ -342,7 +342,7 @@ switching_tags_clears_the_last_one :: proc(t: ^testing.T) {
 	// replay into a store, which is what a consumer effectively does
 	st: Store
 	defer store_close(&st)
-	for line in out do store_apply(&st, Emit{line, .State, 1})
+	for line in out do store_apply(&st, Emit{line, 1})
 
 	lines := make([dynamic]string, context.temp_allocator)
 	store_each(&st, &lines)

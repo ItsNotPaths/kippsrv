@@ -41,7 +41,7 @@ want() {
 
 want greeting   'version	2	broker=kippsrv'   ''
 want dump       'retain	tag/0/1	state=occupied' ''
-want late       'retain	focus/0'               ''
+want late       'retain	layout/0'              ''
 want sync       '^sync	state$'                ''
 want no_forgery 'error	noconnect'             'retain	tag/0/9	state=focused
 '

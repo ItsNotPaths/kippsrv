@@ -348,7 +348,7 @@ watcher_pass :: proc(vm: ^Vm, a: Adapter, out: ^[dynamic]Emit, src: int) {
 	strings.write_string(&b, "]}")
 
 	for e in vm_feed(vm, a, strings.to_string(b)) {
-		append(out, Emit{strings.clone(e.line, context.temp_allocator), e.kind, src})
+		append(out, Emit{strings.clone(e.line, context.temp_allocator), src})
 	}
 	for it in w.dropped do delete(it)
 	clear(&w.dropped)

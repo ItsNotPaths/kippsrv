@@ -169,12 +169,10 @@ passthrough_carries_a_kipp_program :: proc(t: ^testing.T) {
 
 	fact := vm_feed(v, a, "win\t7\tws=1\tpos=2\ttitle=a=b")
 	testing.expect_value(t, len(fact), 1)
-	testing.expect_value(t, fact[0].kind, Emit_Kind.State)
 	testing.expect_value(t, fact[0].line, "retain\twin/7\tws=1\tpos=2\ttitle=a=b")
 
 	event := vm_feed(v, a, "wm_done\tevent=1\tref=p17\tcmd=WM_LINE")
 	testing.expect_value(t, len(event), 1)
-	testing.expect_value(t, event[0].kind, Emit_Kind.Event)
 	testing.expect_value(t, event[0].line, "publish\twm_done\tref=p17\tcmd=WM_LINE")
 
 	testing.expect_value(t, len(vm_feed(v, a, "sync\tstate")), 0)

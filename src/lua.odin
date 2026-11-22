@@ -13,8 +13,8 @@ import "core:fmt"
 import "core:strings"
 import lua "vendor:lua/5.4"
 
-// A fact has a current value and belongs in the store. An event does not.
-// Only the adapter knows which.
+// Which k call built a line: a fact, an event, or a fact that is gone.
+@(private = "file")
 Emit_Kind :: enum {
 	State,
 	Event,
@@ -23,7 +23,6 @@ Emit_Kind :: enum {
 
 Emit :: struct {
 	line: string,
-	kind: Emit_Kind,
 	src:  int,      // which source produced it. 0 is none
 }
 
@@ -175,7 +174,7 @@ build_and_push :: proc(L: ^lua.State, kind: Emit_Kind) -> c.int {
 			v.paths[v.running], string(lua.L_checkstring(L, 1)), MAX_LINE)
 		return 0
 	}
-	append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), kind, 0})
+	append(&v.emitted, Emit{strings.clone(line, context.temp_allocator), 0})
 	return 0
 }
 

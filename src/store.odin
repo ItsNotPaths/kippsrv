@@ -28,16 +28,6 @@ Store :: struct {
 	wrote: i64,                 // when the projection last landed
 }
 
-// A fact is identified by its topic. The payload is the value, so
-// `retain tag/eDP-1/2 state=occupied` replaces `retain tag/eDP-1/2
-// state=focused` instead of sitting beside it.
-@(private = "file")
-key_of :: proc(line: string, allocator := context.allocator) -> (string, bool) {
-	m, ok := parse(line, context.temp_allocator)
-	if !ok || m.topic == "" do return "", false
-	return strings.clone(m.topic, allocator), true
-}
-
 store_close :: proc(st: ^Store) {
 	for k, v in st.facts {
 		delete(k)
@@ -49,35 +39,30 @@ store_close :: proc(st: ^Store) {
 
 // Apply one thing an adapter produced. Returns what a consumer should see,
 // or "" when nothing changed.
+//
+// A fact is identified by its topic. The payload is the value, so
+// `retain tag/eDP-1/2 state=occupied` replaces `retain tag/eDP-1/2
+// state=focused` instead of sitting beside it.
 store_apply :: proc(st: ^Store, e: Emit) -> string {
-	if e.kind == .Event do return e.line   // no current value, nothing to store
+	m, ok := parse(e.line, context.temp_allocator)
+	if !ok || m.topic == "" do return ""
+	if m.verb != "retain" do return e.line   // no current value, nothing to store
 
-	k, ok := key_of(e.line)
-	if !ok do return ""
-	defer delete(k)
-
-	// (hole store-topic :tags broker) drop is its own line in v1; in v2 a retain with no payload drops.
-	if e.kind == .Drop {
+	k := m.topic
+	if len(m.payload) == 0 {
 		old, had := st.facts[k]
 		if !had do return ""
-		delete_key(&st.facts, k)
-		delete(old.line)
 		for o, i in st.order {
 			if o == k {
+				delete_key(&st.facts, k)
+				delete(old.line)
 				delete(o)
 				ordered_remove(&st.order, i)
 				break
 			}
 		}
 		st.dirty = true
-
-		// Its own kind: a fact returned with no attributes is not
-		// distinguishable from one that has none.
-		o: Out
-		begin(&o, "drop")
-		for f in strings.split(k, "\t", context.temp_allocator) do add(&o, "%s", f)
-		line, ok := str(&o)
-		return ok ? strings.clone(line, context.temp_allocator) : ""
+		return e.line
 	}
 
 	if old, had := st.facts[k]; had {
@@ -127,7 +112,7 @@ stale_line :: proc(key: string) -> string {
 
 // A source died. Its facts are last-known, not gone: the headphone still
 // exists, we just cannot see it.
-// (hole status-topic :tags broker :needs store-topic) marks each fact of a dead source stale; proposed v2: retain status/<source> state=offline.
+// (hole status-topic :tags broker) marks each fact of a dead source stale; proposed v2: retain status/<source> state=offline.
 store_stale :: proc(st: ^Store, src: int) -> []string {
 	out := make([dynamic]string, context.temp_allocator)
 	if src == 0 do return out[:]
