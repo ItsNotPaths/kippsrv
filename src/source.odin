@@ -21,6 +21,7 @@ Kind :: enum {
 	Dbus,
 }
 
+// (hole source-state :tags sources :sev polish :needs drop-sdbus) the life of a source is spread over done, dead, fails, pid, fd and input; one state enum once the dbus kind is gone.
 Source :: struct {
 	id:      int,
 	name:    string,
