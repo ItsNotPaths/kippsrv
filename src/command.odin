@@ -74,5 +74,5 @@ command :: proc(s: ^Server, m: ^Msg, fd: posix.FD) {
 		}
 		return
 	}
-	// No adapter takes it. A publish nobody takes is dropped, as MQTT does.
+	// A publish no adapter takes is dropped, as MQTT does.
 }

@@ -73,6 +73,10 @@ want no_verb    'error	badverb	verb=TAG'      'TAG	9
 want own_line   '^publish	key/x$'           'subscribe	key/*
 publish	key/x
 '
+want_none unsubscribed '^publish'           'subscribe	key/*
+unsubscribe	key/*
+publish	key/x
+'
 want_none unheard '^publish'                'publish	key/x
 '
 

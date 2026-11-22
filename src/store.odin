@@ -46,14 +46,13 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 	if len(m.payload) == 0 {
 		old, had := st.facts[k]
 		if !had do return ""
+		delete_key(&st.facts, k)
+		delete(old)
 		for o, i in st.order {
-			if o == k {
-				delete_key(&st.facts, k)
-				delete(old)
-				delete(o)
-				ordered_remove(&st.order, i)
-				break
-			}
+			if o != k do continue
+			delete(o)   // the map's key, freed after the map lets go of it
+			ordered_remove(&st.order, i)
+			break
 		}
 		st.dirty = true
 		return e.line

@@ -5,6 +5,7 @@ package kippsrv
 
 import "core:c"
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import "core:sys/posix"
 
@@ -365,9 +366,11 @@ subscribed :: proc(c: ^Conn, topic: string) -> bool {
 // is answered again and not stored twice.
 @(private = "file")
 subscribe :: proc(s: ^Server, fd: posix.FD, c: ^Conn, pattern: string) {
-	held := false
-	for p in c.patterns do held ||= p == pattern
-	if !held {
+	if !is_pattern(pattern) {
+		send_error(s, fd, "badtopic", fmt.tprintf("topic=%s", pattern), "not a pattern")
+		return
+	}
+	if !slice.contains(c.patterns[:], pattern) {
 		if len(c.patterns) == MAX_SUBS {
 			send_error(s, fd, "badarg", fmt.tprintf("topic=%s", pattern),
 			           "too many subscribes")
@@ -379,6 +382,7 @@ subscribe :: proc(s: ^Server, fd: posix.FD, c: ^Conn, pattern: string) {
 	send_to(s, fd, fmt.tprintf("sync\t%s", pattern))
 }
 
+// A pattern not held, valid or not, is nothing to remove.
 @(private = "file")
 unsubscribe :: proc(c: ^Conn, pattern: string) {
 	for p, i in c.patterns {
@@ -478,15 +482,8 @@ read_conn :: proc(s: ^Server, fd: posix.FD) {
 		case .Line:
 			m, _ := parse(string(line[:n]), context.temp_allocator)
 			switch m.verb {
-			case "subscribe", "unsubscribe":
-				if !is_pattern(m.topic) {
-					send_error(s, fd, "badtopic", fmt.tprintf("topic=%s", m.topic),
-					           "not a pattern")
-				} else if m.verb == "subscribe" {
-					subscribe(s, fd, &s.conns[i], m.topic)
-				} else {
-					unsubscribe(&s.conns[i], m.topic)
-				}
+			case "subscribe":   subscribe(s, fd, &s.conns[i], m.topic)
+			case "unsubscribe": unsubscribe(&s.conns[i], m.topic)
 			case "publish":
 				if !is_topic(m.topic) {
 					send_error(s, fd, "badtopic", fmt.tprintf("topic=%s", m.topic),
