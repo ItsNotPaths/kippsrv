@@ -8,24 +8,29 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Static against musl, so one build runs on any x86_64 Linux.
+    container: alpine:3.22
+    env:
+      LDFLAGS: -static
     # Only catches a hang.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-
       # meson, ninja and gperf build basu. socat is check.sh's client, and
-      # dbus gives the bus checks a session bus instead of a skip.
+      # dbus gives the bus checks a session bus instead of a skip. LLVM builds Odin.
       - name: Install build deps
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-              meson ninja-build gperf pkg-config socat dbus
+          apk add --no-cache bash build-base clang20 llvm20-dev git file tar \
+              meson ninja gperf pkgconf socat dbus
+          echo /usr/lib/llvm20/bin >> "$GITHUB_PATH"
 
-      - name: Install Odin
-        uses: laytan/setup-odin@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          release: dev-2026-10
+      - uses: actions/checkout@v4
+
+      # Odin's own releases link glibc, so it is built here.
+      - name: Build Odin
+        run: |
+          git clone -q --depth 1 --branch dev-2026-10 https://github.com/odin-lang/Odin /opt/odin
+          cd /opt/odin && ./build_odin.sh release
+          echo /opt/odin >> "$GITHUB_PATH"
 
       - name: Build basu
         run: ./download-deps.sh

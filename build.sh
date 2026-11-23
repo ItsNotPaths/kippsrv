@@ -41,15 +41,15 @@ while [ $# -gt 0 ]; do
 done
 
 # kippbus links basu statically: vendor/basu/build holds libbasu.a and nothing
-# else to link against.
+# else to link against. LDFLAGS goes to both links; a release sets -static.
 build() {
 	if [ ! -f "$basu/libbasu.a" ]; then
 		echo "error: basu is not built. Run ./download-deps.sh first" >&2
 		exit 1
 	fi
 	mkdir -p "$out"
-	odin build src -out:"$out/kippsrv" ${version:+-define:VERSION="$version"}
-	odin build bus -out:"$out/kippbus" -extra-linker-flags:"-L$PWD/$basu"
+	odin build src -out:"$out/kippsrv" ${version:+-define:VERSION="$version"} -extra-linker-flags:"${LDFLAGS:-}"
+	odin build bus -out:"$out/kippbus" -extra-linker-flags:"-L$PWD/$basu ${LDFLAGS:-}"
 }
 
 if [ "$public" = 0 ]; then
