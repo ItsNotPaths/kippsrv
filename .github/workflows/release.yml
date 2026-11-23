@@ -32,7 +32,7 @@ jobs:
       - name: Install build deps
         run: |
           apk add --no-cache bash build-base clang20 llvm20-dev git file tar \
-              meson ninja gperf pkgconf socat dbus glib
+              meson ninja gperf pkgconf socat dbus glib github-cli
           echo /usr/lib/llvm20/bin >> "$GITHUB_PATH"
 
       - uses: actions/checkout@v4
