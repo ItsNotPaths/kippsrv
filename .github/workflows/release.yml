@@ -44,6 +44,13 @@ jobs:
           cd /opt/odin && LDFLAGS= ./build_odin.sh release
           echo /opt/odin >> "$GITHUB_PATH"
 
+      # Odin's prebuilt Lua is fortified against glibc, so its 5.4.2 is built again here.
+      - name: Build Lua
+        run: |
+          wget -qO- https://www.lua.org/ftp/lua-5.4.2.tar.gz | tar -xz -C /tmp
+          LDFLAGS= make -C /tmp/lua-5.4.2/src liblua.a SYSCFLAGS=-DLUA_USE_POSIX
+          cp /tmp/lua-5.4.2/src/liblua.a /opt/odin/vendor/lua/5.4/linux/liblua54.a
+
       - name: Build basu
         run: ./download-deps.sh
 
