@@ -41,7 +41,7 @@ jobs:
       - name: Build Odin
         run: |
           git clone -q --depth 1 --branch dev-2026-10 https://github.com/odin-lang/Odin /opt/odin
-          cd /opt/odin && ./build_odin.sh release
+          cd /opt/odin && LDFLAGS= ./build_odin.sh release
           echo /opt/odin >> "$GITHUB_PATH"
 
       - name: Build basu
