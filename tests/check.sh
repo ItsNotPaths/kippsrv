@@ -260,11 +260,12 @@ EOF2
 		FAILS=$((FAILS + 1))
 	fi
 
-	busctl --user call "$TRAY" /StatusNotifierWatcher \
-		org.kde.StatusNotifierWatcher RegisterStatusNotifierItem s org.test.Item \
+	gdbus call --session --dest "$TRAY" --object-path /StatusNotifierWatcher \
+		--method org.kde.StatusNotifierWatcher.RegisterStatusNotifierItem "'org.test.Item'" \
 		>/dev/null 2>&1
-	got=$(busctl --user get-property "$TRAY" /StatusNotifierWatcher \
-		org.kde.StatusNotifierWatcher RegisteredStatusNotifierItems 2>/dev/null)
+	got=$(gdbus call --session --dest "$TRAY" --object-path /StatusNotifierWatcher \
+		--method org.freedesktop.DBus.Properties.Get \
+		"'org.kde.StatusNotifierWatcher'" "'RegisteredStatusNotifierItems'" 2>/dev/null)
 	if printf '%s' "$got" | grep -q 'org.test.Item' &&
 	   grep -q '^retain	tray/org.test.Item/StatusNotifierItem	state=registered' "$STATE"; then
 		echo "ok    the tray owns a name and an item becomes a fact"
@@ -284,9 +285,9 @@ EOF2
 	fi
 
 	# The reply is the id, and the id is what everything else names.
-	id=$(busctl --user call "$NOTIFY" "$NPATH" "$NIFACE" Notify \
-		'susssasa{sv}i' grim 0 camera "Screenshot saved" body 0 1 urgency y 2 0 \
-		2>/dev/null | awk '{print $2}')
+	id=$(gdbus call --session --dest "$NOTIFY" --object-path "$NPATH" --method "$NIFACE.Notify" \
+		"'grim'" "uint32 0" "'camera'" "'Screenshot saved'" "'body'" "@as []" \
+		"{'urgency': <byte 2>}" "int32 0" 2>/dev/null | sed -n 's/^(uint32 \([0-9]*\),)$/\1/p')
 	sleep 0.4
 	line=$(grep '^retain	notif/' "$STATE" | head -1)
 	if [ "$id" = "1" ] && printf '%s' "$line" | grep -q 'app=grim.*urgency=critical'; then
@@ -306,8 +307,8 @@ EOF2
 		FAILS=$((FAILS + 1))
 	fi
 
-	busctl --user call "$NOTIFY" "$NPATH" "$NIFACE" \
-		CloseNotification u "${id:-1}" >/dev/null 2>&1
+	gdbus call --session --dest "$NOTIFY" --object-path "$NPATH" \
+		--method "$NIFACE.CloseNotification" "uint32 ${id:-1}" >/dev/null 2>&1
 	sleep 0.4
 	if ! grep -q '^retain	notif/' "$STATE"; then
 		echo "ok    closing one drops its fact"
