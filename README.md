@@ -190,14 +190,14 @@ a reader written against that library talks to kippsrv with no change.
 
 ```sh
 ./download-deps.sh --force   # rebuild basu
-./build.sh test              # lint, unit tests, then a socat round trip (needs socat; dbus for the bus checks)
+./build.sh test              # lint, unit tests, then a socat round trip (needs socat; dbus and gdbus for the bus checks)
 ./build.sh --version v1.2.3  # stamp the build: kippsrv --version prints it
 PREFIX=/usr DESTDIR=pkg ./build.sh install --version v1.2.3   # system-wide, for a package
 ```
 
-CI builds with the Odin release `dev-2026-10` on GitHub's `ubuntu-latest`. A
-release is a prefix tree: `tar -C /usr/local -xzf kippsrv-*.tar.gz`. Both
-binaries need only glibc, at least as new as that runner's.
+CI builds in an Alpine container, with Odin `dev-2026-10` and Lua 5.4.2 built there,
+statically against musl. A release is a prefix tree: `tar -C /usr/local -xzf kippsrv-*.tar.gz`.
+Both binaries are static, so they run on any x86_64 Linux, glibc or musl.
 
 Maintainers cut a release with `./build.sh --public --version vX.Y.Z`, which
 starts the release workflow through the `gh` CLI.
