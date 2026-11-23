@@ -120,6 +120,10 @@ start "$TOP"
 want greeting   'version	2	broker=kippsrv'   ''
 want dump       'retain	tag/0/1	state=occupied' 'subscribe	*
 '
+want urgent     'retain	tag/0/4	state=occupied,urgent' 'subscribe	*
+'
+want_none emptied '^retain	tag/0/3'          'subscribe	*
+'
 want late       'retain	layout/0'              'subscribe	*
 '
 want sync       '^sync	tag/\*$'              'subscribe	tag/*
