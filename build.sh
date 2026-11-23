@@ -48,7 +48,7 @@ build() {
 		exit 1
 	fi
 	mkdir -p "$out"
-	odin build src -out:"$out/kippsrv" ${version:+-define:VERSION="$version"} -extra-linker-flags:"${LDFLAGS:-}"
+	odin build src -out:"$out/kippsrv" ${version:+-define:VERSION="$version"} ${LDFLAGS:+-extra-linker-flags:"$LDFLAGS"}
 	odin build bus -out:"$out/kippbus" -extra-linker-flags:"-L$PWD/$basu ${LDFLAGS:-}"
 }
 
