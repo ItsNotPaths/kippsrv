@@ -32,7 +32,7 @@ jobs:
       - name: Install build deps
         run: |
           apk add --no-cache bash build-base clang20 llvm20-dev git file tar \
-              meson ninja gperf pkgconf socat dbus
+              meson ninja gperf pkgconf socat dbus glib
           echo /usr/lib/llvm20/bin >> "$GITHUB_PATH"
 
       - uses: actions/checkout@v4
@@ -51,12 +51,8 @@ jobs:
           LDFLAGS= make -C /tmp/lua-5.4.2/src liblua.a SYSCFLAGS=-DLUA_USE_POSIX
           cp /tmp/lua-5.4.2/src/liblua.a /opt/odin/vendor/lua/5.4/linux/liblua54.a
 
-      # basuctl stands in for systemd's busctl, which the bus checks use.
       - name: Build basu
-        run: |
-          ./download-deps.sh
-          ninja -C vendor/basu/build basuctl
-          ln -s "$PWD/vendor/basu/build/basuctl" /usr/local/bin/busctl
+        run: ./download-deps.sh
 
       - name: Check
         run: dbus-run-session -- ./build.sh test

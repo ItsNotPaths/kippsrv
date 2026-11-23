@@ -185,10 +185,10 @@ said outside_claim   'source "stray" retained "z/1", outside its claim'
 want_none stray_dropped '^retain	z/'        'subscribe	*
 '
 
-# D-Bus needs a live session bus and busctl. Missing either is a skip. Each
+# D-Bus needs a live session bus and gdbus. Missing either is a skip. Each
 # server owns a test name, never the real one: taking that stops whatever
 # holds it, which is not a thing a test does.
-if command -v busctl >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+if command -v gdbus >/dev/null && [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
 	B=$TOP/bus
 	folders "$B"
 	SOURCES=$B/data/kippsrv/sources.d
@@ -233,7 +233,8 @@ EOF2
 	SOCK=$B/run/kippsrv.sock
 	STATE=$B/run/kippsrv.state
 
-	busctl --user emit /x org.kippsrv.Test Sig "sa{sv}" hello 2 k1 s v1 k2 i 42 >/dev/null 2>&1
+	gdbus emit --session --object-path /x --signal org.kippsrv.Test.Sig \
+		"'hello'" "{'k1': <'v1'>, 'k2': <42>}" >/dev/null 2>&1
 	sleep 0.4
 	# a variant is collapsed the way busctl collapses it, so one adapter
 	# works whether a fact was polled or pushed
@@ -316,7 +317,7 @@ EOF2
 	fi
 	SOCK=$TOP/run/kippsrv.sock
 else
-	echo "skip  bus (no busctl or no session bus)"
+	echo "skip  bus (no gdbus or no session bus)"
 fi
 
 if [ -s "$TOP/run/kippsrv.state" ]; then
