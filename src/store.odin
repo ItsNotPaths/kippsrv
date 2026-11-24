@@ -34,7 +34,7 @@ store_dump :: proc(s: ^Server, fd: posix.FD, pattern: string) {
 }
 
 // A client's retain, already inside its claim.
-store_retain :: proc(s: ^Server, line: string) {
+store_line :: proc(s: ^Server, line: string) {
 	if moved := store_apply(&store, Emit{line, 0}); moved != "" do broadcast(s, moved)
 }
 
@@ -56,23 +56,10 @@ store_close :: proc(st: ^Store) {
 store_apply :: proc(st: ^Store, e: Emit) -> string {
 	m, ok := parse(e.line, context.temp_allocator)
 	if !ok || m.topic == "" do return ""
+	if m.verb == "delete" do return store_forget(st, m.topic, e.line)
 	if m.verb != "retain" do return e.line   // no current value, nothing to store
 
 	k := m.topic
-	if len(m.payload) == 0 {
-		old, had := st.facts[k]
-		if !had do return ""
-		delete_key(&st.facts, k)
-		delete(old)
-		for o, i in st.order {
-			if o != k do continue
-			delete(o)   // the map's key, freed after the map lets go of it
-			ordered_remove(&st.order, i)
-			break
-		}
-		st.dirty = true
-		return e.line
-	}
 
 	if old, had := st.facts[k]; had {
 		if old == e.line do return ""   // a repeat is silence
@@ -96,6 +83,24 @@ store_apply :: proc(st: ^Store, e: Emit) -> string {
 	}
 	st.dirty = true
 	return e.line
+}
+
+// A delete forgets the topic and goes out as it came, so a reader forgets it
+// too. Deleting a topic that is not held changes nothing and is silent.
+@(private = "file")
+store_forget :: proc(st: ^Store, topic, line: string) -> string {
+	old, had := st.facts[topic]
+	if !had do return ""
+	delete_key(&st.facts, topic)
+	delete(old)
+	for ordered, index in st.order {
+		if ordered != topic do continue
+		delete(ordered)   // the map's key, freed after the map lets go of it
+		ordered_remove(&st.order, index)
+		break
+	}
+	st.dirty = true
+	return line
 }
 
 // Everything true right now, in the order it was first seen.

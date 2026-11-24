@@ -27,6 +27,22 @@ k.retain("net/" .. uuid, "name=home")       -- right
 A program that prints kipp through a file with no `feed` is held to the same
 rules.
 
+## E-delete — an adapter produced a retain with no fields, or a delete with some
+
+That one line was dropped. Everything else is unaffected.
+
+*For the adapter's maintainer.* A `retain` is a value and has at least one
+field. Removing a value is its own verb, `delete`, with no fields. kipp before
+`delete` read an empty retain as a delete; it no longer does.
+
+```lua
+k.retain("bt/" .. address)                  -- wrong: no fields
+k.delete("bt/" .. address)                  -- right
+```
+
+A program that prints kipp through a file with no `feed` is held to the same
+rules.
+
 ## E-toolong — an adapter produced a line over 1024 bytes
 
 That one line was dropped. Everything else is unaffected.

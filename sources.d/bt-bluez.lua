@@ -106,13 +106,13 @@ local function gone(path, interface)
 	local device = devices[path]
 
 	if interface == DEVICE and device then
-		k.retain("bt/" .. device.address)
+		k.delete("bt/" .. device.address)
 		path_of_address[device.address], devices[path] = nil, nil
 	elseif interface == BATTERY and device then
 		device.battery = nil
 		publish_device(path)
 	elseif interface == RADIO and radios[path] then
-		k.retain("bt_radio/" .. radios[path].id)
+		k.delete("bt_radio/" .. radios[path].id)
 		radios[path] = nil
 	end
 end

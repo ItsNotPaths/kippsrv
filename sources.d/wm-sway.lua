@@ -67,7 +67,7 @@ function feed(line)
 			if focused[ws.output] == ws.num then
 				focused[ws.output] = nil
 			end
-			k.retain("tag/" .. ws.output .. "/" .. ws.num)
+			k.delete("tag/" .. ws.output .. "/" .. ws.num)
 		elseif ws.focused then
 			set_mon(ws.output)
 			set_tag(ws.output, ws.num)

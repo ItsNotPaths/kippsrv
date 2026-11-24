@@ -50,16 +50,16 @@ an_event_is_never_stored :: proc(t: ^testing.T) {
 }
 
 @(test)
-an_empty_retain_forgets_a_topic :: proc(t: ^testing.T) {
+a_delete_forgets_a_topic :: proc(t: ^testing.T) {
 	st: kippsrv.Store
 	defer kippsrv.store_close(&st)
 
 	apply(&st, "retain\tmon/HDMI-A-1\tw=1920")
 	apply(&st, "retain\tmon/eDP-1\tw=2256")
-	// A retain with no payload forgets the topic and goes out as it came, so
-	// a reader forgets it too.
-	testing.expect_value(t, apply(&st, "retain\tmon/HDMI-A-1"), "retain\tmon/HDMI-A-1")
-	testing.expect_value(t, apply(&st, "retain\tmon/HDMI-A-1"), "")   // already gone
+	// A delete forgets the topic and goes out as it came, so a reader forgets
+	// it too.
+	testing.expect_value(t, apply(&st, "delete\tmon/HDMI-A-1"), "delete\tmon/HDMI-A-1")
+	testing.expect_value(t, apply(&st, "delete\tmon/HDMI-A-1"), "")   // already gone
 
 	lines := make([dynamic]string, context.temp_allocator)
 	kippsrv.store_each(&st, &lines)

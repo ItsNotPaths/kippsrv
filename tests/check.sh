@@ -153,6 +153,20 @@ will	retain	x/state	state=offline
 ' >/dev/null
 want will       '^retain	x/state	state=offline' 'subscribe	x/*
 '
+want empty_retain 'error	badarg	topic=x/1	msg=retain needs a field, delete has none' 'connect	owner
+retain	x/1
+'
+want deleted    '^delete	x/1$'             'connect	owner
+subscribe	x/*
+retain	x/1	v=1
+delete	x/1
+'
+ask 'connect	owner
+retain	x/gone	v=1
+will	delete	x/gone
+' >/dev/null
+want_none will_delete '^retain	x/gone'      'subscribe	x/*
+'
 want request    '^retain	echo/hi	seen=1'   'subscribe	echo/*
 publish	echo/request	word=hi
 '
@@ -181,7 +195,7 @@ want user_file       'status/user-copy'     'subscribe	status/*
 '
 want_none system_file 'status/system-copy'  'subscribe	status/*
 '
-said outside_claim   'source "stray" retained "z/1", outside its claim'
+said outside_claim   'source "stray" wrote "z/1", outside its claim'
 want_none stray_dropped '^retain	z/'        'subscribe	*
 '
 
@@ -224,7 +238,7 @@ source { name = "names", retains = "named/*",
 function feed(line)
 	local message = k.json(line)
 	if not message then return end
-	if message.type == "left" then k.retain("named/one") end
+	if message.type == "left" then k.delete("named/one") end
 	if message.type == "method_return" then k.retain("named/one", "server=" .. message.body[1].data) end
 end
 EOF2

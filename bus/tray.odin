@@ -21,10 +21,17 @@ ITEM_INTERFACE :: "org.kde.StatusNotifierItem"
 @(private = "file") hosts: [dynamic]string   // bus names, so one that exits stops counting
 
 @(private = "file")
-print_item :: proc(item: string, registered: bool) {
+print_item :: proc(item: string) {
 	builder := strings.builder_make(context.temp_allocator)
 	begin_retain(&builder, fmt.tprintf("tray/%s", item))
-	if registered do add_field(&builder, "state", "registered")
+	add_field(&builder, "state", "registered")
+	write_line(strings.to_string(builder))
+}
+
+@(private = "file")
+print_gone :: proc(item: string) {
+	builder := strings.builder_make(context.temp_allocator)
+	begin_delete(&builder, fmt.tprintf("tray/%s", item))
 	write_line(strings.to_string(builder))
 }
 
@@ -47,7 +54,7 @@ on_register_item :: proc "c" (message: ^Bus_Message, user: rawptr, error: rawptr
 		delete(item)
 	} else {
 		append(&items, item)
-		print_item(item, true)
+		print_item(item)
 		properties_changed()
 		emit_signal("StatusNotifierItemRegistered", item)
 	}
@@ -134,7 +141,7 @@ notice_departure :: proc(message: ^Bus_Message) {
 	gone := fmt.tprintf("%s/", name)
 	for index := 0; index < len(items); index += 1 {
 		if !strings.has_prefix(items[index], gone) do continue
-		print_item(items[index], false)
+		print_gone(items[index])
 		emit_signal("StatusNotifierItemUnregistered", items[index])
 		delete(items[index])
 		ordered_remove(&items, index)

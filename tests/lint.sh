@@ -12,7 +12,7 @@ fail=0
 # It matches quoted string literals, because naming a kind means writing one.
 # Comments are stripped first: prose that names a kind as an example explains
 # the boundary rather than crossing it.
-kinds=$(grep -ohE 'k\.(retain|publish)\("[a-z_]+' sources.d/*.lua | sed 's/.*"//' | sort -u)
+kinds=$(grep -ohE 'k\.(retain|delete|publish)\("[a-z_]+' sources.d/*.lua | sed 's/.*"//' | sort -u)
 pattern=$(printf '%s\n' "$kinds" | paste -sd'|')
 core_failed=0
 for file in src/*.odin; do

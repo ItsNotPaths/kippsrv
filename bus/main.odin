@@ -131,9 +131,15 @@ write_clean :: proc(builder: ^strings.Builder, text: string) {
 	}
 }
 
-// `retain <topic>`, with fields to follow from add_field. None deletes it.
+// `retain <topic>`, with fields to follow from add_field. A retain needs one.
 begin_retain :: proc(builder: ^strings.Builder, topic: string) {
 	strings.write_string(builder, "retain\t")
+	write_clean(builder, topic)
+}
+
+// `delete <topic>`. A delete has no fields.
+begin_delete :: proc(builder: ^strings.Builder, topic: string) {
+	strings.write_string(builder, "delete\t")
 	write_clean(builder, topic)
 }
 

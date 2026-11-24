@@ -80,7 +80,7 @@ function feed(line)
 		for m, t in pairs(focused) do
 			if t == id then focused[m] = nil end
 		end
-		if mon then k.retain("tag/" .. mon .. "/" .. id) end
+		if mon then k.delete("tag/" .. mon .. "/" .. id) end
 
 	elseif ev == "activewindow" then
 		show(split2(data))

@@ -135,7 +135,8 @@ four payload fields.
 - **The payload** is `key=value` fields. A key follows the same rule as a
   kind. A value runs to the end of its field, and only the first `=` splits
   it, so `name=home=wifi` is the key `name` with the value `home=wifi`.
-- **A `retain` with no payload deletes** the topic's value.
+- **`delete` removes** the topic's value, and has no payload. A `retain` always
+  has a field; one with none is refused with `error badarg`.
 - **A line holds at most 1024 bytes.**
 
 <!-- howto: version sync error errors refused refuse rejected broker first line lines kippsrv sends code codes server reply replies response connection -->
@@ -333,13 +334,14 @@ The functions a file defines are its adapter. All are optional.
 | `tick()` | every `every` ms, for a `timer = true` source |
 | `request(message, source_name)` | when a request reaches a source of this file (section 6) |
 
-<!-- howto: k api k.retain k.publish k.json k.parse k.log retain publish json parse decode decoding log logging print debug store stored delete event calls call nil table tables -->
+<!-- howto: k api k.retain k.delete k.publish k.json k.parse k.log retain publish json parse decode decoding log logging print debug store stored delete event calls call nil table tables -->
 
 An adapter calls into kippsrv through `k`:
 
 | Call | Does |
 | --- | --- |
-| `k.retain(topic, "key=value", ...)` | a value. Stored, and passed on when it changed. No fields deletes it |
+| `k.retain(topic, "key=value", ...)` | a value. Stored, and passed on when it changed. Needs a field |
+| `k.delete(topic)` | the value is gone. Forgotten, and passed on |
 | `k.publish(topic, "key=value", ...)` | an event. Passed on, never stored |
 | `k.json(text)` | decodes JSON into tables, or returns `nil` |
 | `k.parse(line)` | decodes a kipp line into `{verb, topic, payload}`, or returns `nil` |
@@ -460,7 +462,7 @@ says what kippsrv should send when the program's connection drops. Here the
 will deletes the value, so a subscriber never sees a stale temperature:
 
 ```sh
-printf 'connect\tweather\nwill\tretain\tweather/home\nretain\tweather/home\ttemp=12\n' |
+printf 'connect\tweather\nwill\tdelete\tweather/home\nretain\tweather/home\ttemp=12\n' |
 	socat - UNIX-CONNECT:"$XDG_RUNTIME_DIR/kippsrv.sock"
 ```
 
@@ -469,7 +471,7 @@ A subscriber to `weather/*` sees:
 ```
 retain	weather/home	temp=12
 sync	weather/*
-retain	weather/home
+delete	weather/home
 ```
 
 The last line is the will: the program disconnected, and the value is gone.

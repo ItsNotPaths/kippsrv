@@ -69,7 +69,7 @@ print_note :: proc(note: Note) {
 	write_line(strings.to_string(builder))
 }
 
-// Gone, not stale: the empty retain tells the store so.
+// Gone, not stale: the delete tells the store so.
 @(private = "file")
 close_note :: proc(identifier: u32, reason: u32) -> bool {
 	index := find(identifier)
@@ -77,7 +77,7 @@ close_note :: proc(identifier: u32, reason: u32) -> bool {
 
 	note_free(notes[index])
 	ordered_remove(&notes, index)
-	write_line(fmt.tprintf("retain\tnotif/%d", identifier))
+	write_line(fmt.tprintf("delete\tnotif/%d", identifier))
 	emit_closed(identifier, reason)
 	return true
 }

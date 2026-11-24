@@ -35,7 +35,7 @@ function feed(line)
 			if #state > 0 then
 				k.retain("tag/" .. mon .. "/" .. n, "state=" .. table.concat(state, ","))
 			else
-				k.retain("tag/" .. mon .. "/" .. n)
+				k.delete("tag/" .. mon .. "/" .. n)
 			end
 		end
 

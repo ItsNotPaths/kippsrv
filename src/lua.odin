@@ -99,6 +99,17 @@ keep :: proc(v: ^Vm, verb, topic: string, payload: []string) {
 			v.paths[v.running], bad)
 		return
 	}
+	empty_retain := verb == "retain" && len(payload) == 0
+	delete_with_fields := verb == "delete" && len(payload) > 0
+	if empty_retain || delete_with_fields {
+		fmt.eprintfln(
+`kippsrv: %s produced a %s of %q with %s and it was dropped. A retain is a
+         value and has fields; a delete removes one and has none. This is a
+         bug in that adapter file, not in your configuration.
+         [E-delete] See DIAGNOSTICS.md.`,
+			v.paths[v.running], verb, topic, "no fields" if empty_retain else "fields")
+		return
+	}
 
 	o: Out
 	begin(&o, verb)
@@ -126,11 +137,18 @@ build_and_push :: proc(L: ^lua.State, verb: string) -> c.int {
 	return 0
 }
 
-// @api k.retain(topic, key=value, ...)   a value. Stored. No payload deletes it
+// @api k.retain(topic, key=value, ...)   a value. Stored. Needs a field
 @(private = "file")
 l_retain :: proc "c" (L: ^lua.State) -> c.int {
 	context = runtime.default_context()
 	return build_and_push(L, "retain")
+}
+
+// @api k.delete(topic)                  the value is gone. Forgotten, and passed on
+@(private = "file")
+l_delete :: proc "c" (L: ^lua.State) -> c.int {
+	context = runtime.default_context()
+	return build_and_push(L, "delete")
 }
 
 // @api k.publish(topic, key=value, ...)  an event. Never stored
@@ -304,6 +322,7 @@ vm_open :: proc() -> (v: ^Vm, ok: bool) {
 
 	lua.newtable(L)
 	lua.pushcfunction(L, l_retain);  lua.setfield(L, -2, "retain")
+	lua.pushcfunction(L, l_delete);  lua.setfield(L, -2, "delete")
 	lua.pushcfunction(L, l_publish); lua.setfield(L, -2, "publish")
 	lua.pushcfunction(L, l_log);     lua.setfield(L, -2, "log")
 	lua.pushcfunction(L, l_parse);   lua.setfield(L, -2, "parse")
@@ -396,14 +415,14 @@ call :: proc(v: ^Vm, a: Adapter, fn: string, arg: Maybe([]byte)) -> (out: []Emit
 	return v.emitted[:], true
 }
 
-// A file with no feed is for a program that prints kipp. Its retain and
-// publish lines pass through, and the rest of its session is not ours.
+// A file with no feed is for a program that prints kipp. Its retain, delete
+// and publish lines pass through, and the rest of its session is not ours.
 @(private = "file")
 pass :: proc(v: ^Vm, a: Adapter, line: string) -> []Emit {
 	clear(&v.emitted)
 	v.running = a
 	fields := strings.split(line, "\t", context.temp_allocator)
-	if len(fields) >= 2 && (fields[0] == "retain" || fields[0] == "publish") {
+	if len(fields) >= 2 && (fields[0] == "retain" || fields[0] == "delete" || fields[0] == "publish") {
 		keep(v, fields[0], fields[1], fields[2:])
 	}
 	return v.emitted[:]

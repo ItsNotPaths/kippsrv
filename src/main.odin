@@ -44,7 +44,7 @@ main :: proc() {
 	}
 	defer stop(srv)
 	srv.on_dump = store_dump
-	srv.on_retain = store_retain
+	srv.on_store = store_line
 	srv.on_publish = deliver
 	for spec in cfg.sources do srv.claims[spec.name] = spec.retains
 

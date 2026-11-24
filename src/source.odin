@@ -500,10 +500,11 @@ src_settle :: proc(ss: ^Sources) {
 	}
 }
 
-// A retain must fall inside its source's claim. kippsrv's own lines, source
-// 0, and events need none.
+// A retain or a delete must fall inside its source's claim. kippsrv's own
+// lines, source 0, and events need none.
 src_may_retain :: proc(ss: ^Sources, e: Emit) -> bool {
-	if e.src == 0 || !strings.has_prefix(e.line, "retain\t") do return true
+	stored := strings.has_prefix(e.line, "retain\t") || strings.has_prefix(e.line, "delete\t")
+	if e.src == 0 || !stored do return true
 	for s in ss.list {
 		if s.id != e.src do continue
 		topic := topic_of(e.line)
@@ -511,7 +512,7 @@ src_may_retain :: proc(ss: ^Sources, e: Emit) -> bool {
 		if !s.refused {
 			s.refused = true
 			fmt.eprintfln(
-`kippsrv: source %q retained %q, outside its claim, and it was dropped. Its
+`kippsrv: source %q wrote %q, outside its claim, and it was dropped. Its
          file's retains list does not cover what its adapter writes.
          [E-claim] See DIAGNOSTICS.md.`, s.name, topic)
 		}

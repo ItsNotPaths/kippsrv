@@ -235,7 +235,7 @@ Server :: struct {
 	claims:  map[string][]string,   // source name to its claim, borrowed
 	wills:   [dynamic]string,       // of connections that ended, not yet acted on
 	on_dump: proc(s: ^Server, fd: posix.FD, pattern: string),
-	on_retain:  proc(s: ^Server, line: string),
+	on_store:   proc(s: ^Server, line: string),
 	on_publish: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD),
 }
 
@@ -514,17 +514,21 @@ connect :: proc(s: ^Server, fd: posix.FD, name: string) {
 	c.claim = s.claims[name]
 }
 
-// A retain or publish line the rules refuse gets its error here. A retain
-// must fall inside the claim of the client's name, so nothing that connects
-// can forge state for everything else that reads.
+// A retain, delete or publish line the rules refuse gets its error here. A
+// retain or a delete must fall inside the claim of the client's name, so
+// nothing that connects can forge state for everything else that reads.
 @(private = "file")
 refused :: proc(s: ^Server, fd: posix.FD, c: ^Conn, m: ^Msg) -> bool {
 	about := fmt.tprintf("topic=%s", m.topic)
 	switch {
 	case !is_topic(m.topic):
 		send_error(s, fd, "badtopic", about, "not a topic")
-	case m.verb == "retain" && !any_match(c.claim, m.topic):
+	case (m.verb == "retain" || m.verb == "delete") && !any_match(c.claim, m.topic):
 		send_error(s, fd, "badtopic", about, "outside its claim")
+	case m.verb == "retain" && len(m.payload) == 0:
+		send_error(s, fd, "badarg", about, "retain needs a field, delete has none")
+	case m.verb == "delete" && len(m.payload) > 0:
+		send_error(s, fd, "badarg", about, "delete has no payload")
 	case:
 		return false
 	}
@@ -533,8 +537,8 @@ refused :: proc(s: ^Server, fd: posix.FD, c: ^Conn, m: ^Msg) -> bool {
 
 @(private = "file")
 act :: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD) {
-	if m.verb == "retain" {
-		if s.on_retain != nil do s.on_retain(s, line)
+	if m.verb == "retain" || m.verb == "delete" {
+		if s.on_store != nil do s.on_store(s, line)
 	} else if s.on_publish != nil {
 		s.on_publish(s, line, m, fd)
 	}
@@ -545,8 +549,8 @@ act :: proc(s: ^Server, line: string, m: ^Msg, fd: posix.FD) {
 will :: proc(s: ^Server, fd: posix.FD, c: ^Conn, line: string) {
 	rest := strings.trim_prefix(line, "will\t")
 	m, _ := parse(rest, context.temp_allocator)
-	if m.verb != "retain" && m.verb != "publish" {
-		send_error(s, fd, "badarg", fmt.tprintf("verb=%s", m.verb), "a will is a retain or publish")
+	if m.verb != "retain" && m.verb != "delete" && m.verb != "publish" {
+		send_error(s, fd, "badarg", fmt.tprintf("verb=%s", m.verb), "a will is a retain, delete or publish")
 		return
 	}
 	if refused(s, fd, c, &m) do return
@@ -567,7 +571,7 @@ obey :: proc(s: ^Server, fd: posix.FD, c: ^Conn, text: string) {
 	case "subscribe":   subscribe(s, fd, c, m.topic)
 	case "unsubscribe": unsubscribe(c, m.topic)
 	case "will":        will(s, fd, c, text)
-	case "retain", "publish":
+	case "retain", "delete", "publish":
 		if !refused(s, fd, c, &m) do act(s, text, &m, fd)
 	case:
 		send_error(s, fd, "badverb", fmt.tprintf("verb=%s", m.verb), "unknown verb")

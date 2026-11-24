@@ -60,7 +60,7 @@ function feed(line)
 
 	if message.type == "left" then
 		players[player_name] = nil
-		k.retain("media/" .. player_name)
+		k.delete("media/" .. player_name)
 	elseif message.type == "method_return" then
 		publish(player_name, value(message.body[1]) or {})
 	elseif message.member == "PropertiesChanged" then

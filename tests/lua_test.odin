@@ -188,9 +188,24 @@ a_bad_topic_or_key_is_refused :: proc(t: ^testing.T) {
 	v, _ := kippsrv.vm_open()
 	defer kippsrv.vm_close(v)
 
-	testing.expect(t, kippsrv.vm_eval(v, `k.retain("Win/7")`))
-	testing.expect(t, kippsrv.vm_eval(v, `k.retain("42/7")`))
-	testing.expect(t, kippsrv.vm_eval(v, `k.retain("tag/*")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("Win/7", "a=1")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("42/7", "a=1")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("tag/*", "a=1")`))
 	testing.expect(t, kippsrv.vm_eval(v, `k.publish("key/super+a", "Bad Key=1")`))
 	testing.expect_value(t, len(v.emitted), 0)
+}
+
+// A delete is its own verb. A retain with no fields is not one, and is dropped.
+@(test)
+a_delete_is_its_own_verb :: proc(t: ^testing.T) {
+	v, _ := kippsrv.vm_open()
+	defer kippsrv.vm_close(v)
+
+	testing.expect(t, kippsrv.vm_eval(v, `k.delete("bt/1")`))
+	testing.expect_value(t, len(v.emitted), 1)
+	if len(v.emitted) == 1 do testing.expect_value(t, v.emitted[0].line, "delete\tbt/1")
+
+	testing.expect(t, kippsrv.vm_eval(v, `k.retain("bt/1")`))
+	testing.expect(t, kippsrv.vm_eval(v, `k.delete("bt/1", "a=1")`))
+	testing.expect_value(t, len(v.emitted), 1)   // both dropped
 }
