@@ -330,6 +330,74 @@ EOF2
 		echo "FAIL  the closed notification is still a fact"
 		FAILS=$((FAILS + 1))
 	fi
+
+	# A real item needs a D-Bus server; tray_item.py is one, on PyGObject.
+	if python3 -c 'from gi.repository import Gio' 2>/dev/null; then
+		CLICKS=$B/clicks
+		python3 -W ignore tests/tray_item.py "$TRAY" "$CLICKS" > "$B/item" &
+		ITEMPID=$!
+		SERVERS="$SERVERS $ITEMPID"
+		sleep 0.8
+		ITEM="$(head -1 "$B/item")/StatusNotifierItem"
+		fact=$(grep "^retain	tray/$ITEM	" "$STATE")
+		pixmap=$(printf '%s' "$fact" | sed -n 's/.*	pixmap=\([^	]*\).*/\1/p')
+		# 18 header bytes, then BGRA: the first pixel is opaque red
+		first=$(od -An -tu1 -j18 -N4 "$pixmap" 2>/dev/null | tr -s ' ')
+		if printf '%s' "$fact" | grep -q 'icon=test-icon	icon_path=	pixmap=.*	title=Test Item	status=Active	is_menu=1' &&
+		   [ "$(stat -c %s "$pixmap" 2>/dev/null)" = 34 ] && [ "$first" = " 0 0 255 255" ]; then
+			echo "ok    an item's properties and pixmap reach its fact"
+		else
+			echo "FAIL  the item fact is wrong ($fact, $first)"
+			FAILS=$((FAILS + 1))
+		fi
+
+		menu=$(grep "^retain	tray/$ITEM/menu/" "$STATE" | sort)
+		expected="retain	tray/$ITEM/menu/1	parent=0	position=0	label=Open	enabled=1	kind=standard	toggle=none	state=0	submenu=0
+retain	tray/$ITEM/menu/2	parent=0	position=1	label=	enabled=1	kind=separator	toggle=none	state=0	submenu=0
+retain	tray/$ITEM/menu/3	parent=0	position=2	label=Check	enabled=1	kind=standard	toggle=check	state=1	submenu=0
+retain	tray/$ITEM/menu/4	parent=0	position=3	label=More	enabled=1	kind=standard	toggle=none	state=0	submenu=1
+retain	tray/$ITEM/menu/5	parent=4	position=0	label=Inner	enabled=0	kind=standard	toggle=none	state=0	submenu=0"
+		if [ "$menu" = "$expected" ]; then
+			echo "ok    the menu is one fact per shown entry"
+		else
+			echo "FAIL  the menu facts are wrong:"
+			printf '%s\n' "$menu"
+			FAILS=$((FAILS + 1))
+		fi
+
+		gdbus call --session --dest "${ITEM%%/*}" --object-path /Test \
+			--method org.kippsrv.TestItem.Change >/dev/null 2>&1
+		sleep 0.4
+		if grep -q "^retain	tray/$ITEM/menu/1	.*label=Renamed" "$STATE" &&
+		   ! grep -q "^retain	tray/$ITEM/menu/2	" "$STATE" &&
+		   grep -q "^retain	tray/$ITEM/menu/3	" "$STATE"; then
+			echo "ok    a new layout changes and deletes only what moved"
+		else
+			echo "FAIL  the new layout did not land"
+			FAILS=$((FAILS + 1))
+		fi
+
+		ask "publish	tray/request	action=click	item=$ITEM	entry=3
+" >/dev/null
+		sleep 0.4
+		if grep -q '^clicked 3$' "$CLICKS" 2>/dev/null; then
+			echo "ok    a click reaches the item as Event"
+		else
+			echo "FAIL  the click did not reach the item"
+			FAILS=$((FAILS + 1))
+		fi
+
+		kill $ITEMPID
+		sleep 0.4
+		if ! grep -q "^retain	tray/$ITEM" "$STATE" && [ ! -e "$pixmap" ]; then
+			echo "ok    an item that exits takes its menu and pixmap with it"
+		else
+			echo "FAIL  the item left facts or its pixmap behind"
+			FAILS=$((FAILS + 1))
+		fi
+	else
+		echo "skip  tray item (no PyGObject)"
+	fi
 	SOCK=$TOP/run/kippsrv.sock
 else
 	echo "skip  bus (no gdbus or no session bus)"

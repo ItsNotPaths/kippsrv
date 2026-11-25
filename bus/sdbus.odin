@@ -32,8 +32,11 @@ foreign sdbus {
 	bus_message_get_member           :: proc(message: ^Bus_Message) -> cstring ---
 	bus_message_get_sender           :: proc(message: ^Bus_Message) -> cstring ---
 	bus_message_get_type             :: proc(message: ^Bus_Message, type: ^u8) -> c.int ---
+	bus_message_get_reply_cookie     :: proc(message: ^Bus_Message, cookie: ^u64) -> c.int ---
 	bus_message_peek_type            :: proc(message: ^Bus_Message, type: ^u8, contents: ^cstring) -> c.int ---
 	bus_message_read_basic           :: proc(message: ^Bus_Message, type: u8, value: rawptr) -> c.int ---
+	bus_message_read_array           :: proc(message: ^Bus_Message, type: u8, data: ^rawptr, size: ^c.size_t) -> c.int ---
+	bus_message_skip                 :: proc(message: ^Bus_Message, types: cstring) -> c.int ---
 	bus_message_enter_container      :: proc(message: ^Bus_Message, type: u8, contents: cstring) -> c.int ---
 	bus_message_exit_container       :: proc(message: ^Bus_Message) -> c.int ---
 	bus_message_new_method_call      :: proc(bus: ^Bus, message: ^^Bus_Message, destination, path, interface, member: cstring) -> c.int ---
@@ -211,14 +214,19 @@ call_method :: proc(destination, path, interface, member, signature: string,
 	return bus_send(connection, message, nil) >= 0
 }
 
-// The reply arrives through the loop, like a signal. sd_bus_send marks a
-// message sent without a cookie as wanting no reply.
+// The reply arrives through the loop, like a signal, with the cookie returned as its reply cookie.
 call_method_with_reply :: proc(destination, path, interface, member, signature: string,
-                               arguments: []string) -> bool {
+                               arguments: []string) -> (cookie: u64, ok: bool) {
 	message := new_call(destination, path, interface, member, signature, arguments) or_return
+	return send_with_reply(message)
+}
+
+// Sends message and lets it go. sd_bus_send marks a message sent without a
+// cookie as wanting no reply.
+send_with_reply :: proc(message: ^Bus_Message) -> (cookie: u64, ok: bool) {
 	defer bus_message_unref(message)
-	cookie: u64
-	return bus_send(connection, message, &cookie) >= 0
+	ok = bus_send(connection, message, &cookie) >= 0
+	return
 }
 
 // Blocks until the reply, so for start-up only.

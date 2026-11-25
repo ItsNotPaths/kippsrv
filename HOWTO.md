@@ -594,21 +594,36 @@ publish	bt/request	action=scan	state=on|off	radio=<id>
 These own a bus name and print kipp themselves, so their files have no `feed`
 and no `request`, and kipp passes through both ways.
 
-<!-- howto: tray systray statusnotifierwatcher snw sni statusnotifier icon icons applet applets app application click left middle right activate secondary menu scroll wheel delta x y tray/request startup order start before missing empty -->
+<!-- howto: tray systray statusnotifierwatcher snw sni statusnotifier icon icons applet applets app application click left middle right activate secondary menu scroll wheel delta x y tray/request startup order start before missing empty pixmap tga dbusmenu menu entry entries submenu checkbox radio separator open click aboutToShow -->
 
 `kippbus tray` owns `org.kde.StatusNotifierWatcher`. A tray application looks
 for it once, when the application starts, so start kippsrv before them. Each
-icon is `retain tray/<bus name>/<path> state=registered`, deleted when the icon
-goes. It takes:
+icon is a fact, deleted when the icon goes, and so is each entry of its menu:
+
+```
+retain	tray/<bus name>/<path>	state=registered	icon=	icon_path=	pixmap=	title=	status=	is_menu=0|1
+retain	tray/<bus name>/<path>/menu/<id>	parent=	position=	label=	enabled=0|1	kind=standard|separator	toggle=none|check|radio	state=0|1	submenu=0|1
+```
+
+`icon=` is a name from the icon theme, looked up in `icon_path=` first when the
+application gives one. `pixmap=` is a TGA file under
+`$XDG_RUNTIME_DIR/kippbus/tray`, for applications that send pixels instead of a
+name; each new picture is a new file, and the old one is removed. `is_menu=1`
+means the application wants a left click to show its menu. A menu entry's
+`parent=` is 0 at the top level, `position=` orders it among its siblings, and
+hidden entries are left out. It takes:
 
 ```
 publish	tray/request	action=activate|secondary|menu	item=<bus name>/<path>	x=<x>	y=<y>
 publish	tray/request	action=scroll	item=<bus name>/<path>	delta=<steps>	dir=vertical|horizontal
+publish	tray/request	action=open|click	item=<bus name>/<path>	entry=<id>
 ```
 
 `activate` is a left click, `secondary` a middle click and `menu` a right
-click. `x=` and `y=` are where on the screen, so the application can place a
-menu there.
+click, for the few applications that draw their own menu. `x=` and `y=` are
+where on the screen, so the application can place a menu there. Send `open`
+before a menu or submenu shows, with `entry=0` for the top level, since some
+applications fill a menu only then; `click` runs an entry.
 
 <!-- howto: notify notifications notification notify-send daemon dunst mako org.freedesktop.notifications notif notif/request summary body urgency read unread mark close dismiss clear action actions exec x-kipp-exec hint click clicked app icon id -->
 

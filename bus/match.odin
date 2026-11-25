@@ -147,7 +147,7 @@ appeared :: proc(name, owner: string) {
 	if len(each) < 3 do return
 	signature := each[3] if len(each) > 3 else ""
 	arguments := each[4:] if len(each) > 4 else nil
-	if !call_method_with_reply(name, each[0], each[1], each[2], signature, arguments) {
+	if _, sent := call_method_with_reply(name, each[0], each[1], each[2], signature, arguments); !sent {
 		fmt.eprintfln("kippbus: the --each call to %s would not send.", name)
 	}
 }
